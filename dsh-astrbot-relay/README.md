@@ -60,7 +60,7 @@ dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 
 1. `ctx.webServer.register` 注册的路由**没有任何鉴权**——框架的 token/cookie 栅栏
    只挂在 `dsh-client-connection` 自己的 `/api` 路由上。鉴权必须自己写。
-2. `text/delta` 来自 `agent/assistant-stream`，是**瞬时**事件：没有订阅者时永久丢失。
+2. `text/delta` 来自 `session/event` 的 `assistant/chunk`，是**瞬时**事件：没有订阅者时永久丢失。
    因此契约强制 IM 侧「先连 SSE，再 POST /message」。反过来会丢开头几个 token。
 3. agent 事件虽是 `Scoped<Agent>` 派发，但**根 ctx 上未打 tag 的监听者会收到所有
    agent 的事件**。必须自己按 `agent.id` 过滤，否则会串台到用户在 Web UI 里的会话。
@@ -72,7 +72,7 @@ dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
    `createUserMessage`，它会 deep-freeze 消息，手写对象会绕过 freeze）。
 2. `ctx.agents.create` 的模型选择装法：`installModelSelection` /
    `agentPresets.mount` / 自建 `agent/request` hook，三选一。
-3. `agent/assistant-stream` 在真实运行进程里能否收到（本轮只读了发射点）；
+3. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**；
    以及新装插件是否免重启生效。
 
 ## 参考范例（照抄对象，全是已核实路径）

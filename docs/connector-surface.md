@@ -660,10 +660,10 @@
 
 ### §14.0 三个前置结论（回答额外问题）
 
-**Q1：哪些能力强依赖已被删除的 `assistant/chunk` 事件？**
+**Q1：哪些能力强依赖 `assistant/chunk` 事件？**（修订：该事件**并未被删除**，它在 `KNOWN_SESSION_EVENT_TYPES` 内，是活事件；见本小节末行的更正）
 只有一条链路，但它是主路径之一：**`stream_replies` 实时增量回传**。链路为 `<MAIN>:294-326`（`_stream_reply`/`_stream_replies_enabled`）→ `<MAIN>:530-536`（主任务路径调用）→ `<CLIENT>:406-425`（`run_prompt(on_chunk=...)`）→ **`<CLIENT>:459-472`（`event_type == "assistant/chunk"` + `chunk.type == "text-delta"` + 按 seq 去重回调）** → `<CLIENT>:470-472`（回调）→ `<MAIN>:316`（`event.send_streaming`）。
-已安装 DSH 中该事件**只作为 v0 老格式存在**：`<DSHNPM>\dsh-session-format-v0-to-v1\lib\index.js:37`（老格式 disposition 声明）、`<DSHNPM>\dsh-session-format-v1-to-v2\lib\index.js:6`（新版 retained 明确把 `assistant/chunk` 过滤掉）、`:15`（`assistant/message` 新增 `stream` 成员）、`:10`（新增 `assistant/attempt`）、`:820`（报错文案直接写 "targets consumed assistant/chunk"）。
-**迁移含义**：流式必须改挂当前事件面——持久侧 `assistant/attempt`/`assistant/message` 的 `stream` 成员，或瞬时侧 `agent/assistant-stream`（`frame.type == "text-delta"`）。这与 `docs/dsh-side-capabilities.md:26,881,1534` 的结论一致。
+已安装 DSH 中该事件**只作为 v0 老格式存在**：`<DSHNPM>\dsh-session-format-v0-to-v1\lib\index.js:37`（老格式 disposition 声明）、`<DSHNPM>\dsh-session-format-v1-to-v2\lib\index.js:6`（新版 retained 明确把 `assistant/chunk` 过滤掉）【**更正**：`assistant/chunk` 在 `dsh-session\lib\types\known-event-types.js` 的 51 项 `KNOWN_SESSION_EVENT_TYPES` 内，是活事件；此处过滤属 v0→v2 的存储格式迁移，不等于事件被删】、`:15`（`assistant/message` 新增 `stream` 成员）、`:10`（新增 `assistant/attempt`）、`:820`（报错文案直接写 "targets consumed assistant/chunk"）。
+**迁移含义**：流式改挂 `session/event` → `assistant/chunk`（`chunk.type == "text-delta"`）即可，`assistant/chunk` **是活事件而非已删除**；`agent/assistant-stream` 在本机 0.1.2-rc.1 **不存在**（全树扫描证伪）。持久侧 `assistant/message` 的 `stream` 成员仍可用作完成判定。
 其余能力（命令、选项、图片、卡片、KV）**都不依赖** `assistant/chunk`：`stream_replies=false`、headless、或 card 模式下该链路根本不进入。
 
 **Q2：哪些能力强依赖 DSH 的 `/api` RPC 面（跨机部署会失效）？**
@@ -675,7 +675,7 @@
 
 **Q3：有没有能力无法在进程内有等价物（例如必须依赖浏览器侧行为）？**
 **没有必须依赖浏览器侧行为的能力。** 逐项核验：
-- 「浏览器侧合成事件」`assistant/live-chunk`（`docs/dsh-side-capabilities.md:26,882,1535`）本插件**从未使用**——它用的是 host 侧老事件 `assistant/chunk`（`<CLIENT>:459`）；当前 host 侧的等价物是 `agent/assistant-stream`（瞬时、含 `text-delta`）与 `assistant/message` 的 `stream` 成员，均可进程内订阅。
+- 「浏览器侧合成事件」`assistant/live-chunk`（`docs/dsh-side-capabilities.md:26,882,1535`）本插件**从未使用**——它用的是 host 侧老事件 `assistant/chunk`（`<CLIENT>:459`）；当前 host 侧的等价物就是 `assistant/chunk` 本身（瞬时、含 `text-delta`，从 `session/event` 订阅），另有 `assistant/message` 的 `stream` 成员可作持久侧补充，均可进程内订阅。
 - 附件：`session.attachment` 返回 base64（`<CLIENT>:283-289`）+ DSH 侧 `dsh-attachment` 存储可进程内直读，等价物存在。
 - `settings` schema/写：`settings.describe`/`settings.mutate` 是 host RPC，进程内等价物也存在（`settings.update`/`settings.replace` 同样在目录中）。
 - 唯一「无进程内等价物」的是**非 DSH 侧**的两件外部设施：① AstrBot 的 t2i 渲染（`<ASTROOT>\astrbot\core\star\base.py:77-90`，需要 AstrBot 的 HTML 渲染模板/端点）；② 各 IM 平台的流式发送语义（`qqofficial_message_event.py:109-131` 仅 C2C 支持真流式）。二者属于 IM/呈现层，不属于 DSH 能力面。
@@ -688,7 +688,7 @@
 | R2 | `/api` 认证 | `<DSHNPM>\dsh-client-connection\lib\index.js:768-781,431-441,553-556`；插件全仓无凭据代码 | 需实现 token→cookie 交换（或走进程内 host 插件通道，彻底绕开 HTTP） |
 | R3 | RPC 名重映射（13 类） | §6.3 比对表 | `session.history→session/page`；`session.models→session/modelCatalog`；`llm.providers→llm/listProviders`；`llm.models→llm/discoverModels`；`agentPreset.*→agentPresets.*`；`skill.list→skills/list`；`subagent.list→subagents/list`；`subagent.interrupt→subagents/interruptByParent`（参数不同）；`goal.*→goals.*`；`workspace.list→无对应（改走 workspace/follow 或新建）` |
 | R4 | `host.describe` 取代方案 | `<MAIN>:175,570,839,860`；`<DSHNPM>\dsh-api-remotes\lib\client.js` 目录无 `host.*` | cwd/version/provider/model 需另找来源（session 投影 / settings / 进程内 service） |
-| R5 | 流式事件源 | `<CLIENT>:459-472`；格式迁移证据见 Q1 | 改 `agent/assistant-stream`（瞬时）或 `assistant/message.stream`（持久） |
+| R5 | 流式事件源 | `<CLIENT>:459-472`；格式迁移证据见 Q1 | 保持 `assistant/chunk`，改从 `session/event` 订阅（瞬时）或读 `assistant/message.stream`（持久） |
 | R6 | 历史/轮询收敛协议 | `<CLIENT>:441-495`（`session.history` 轮询 + `maxMessages`） | 换成 `session/page` 的窗口语义，或进程内事件订阅；需重新验证 `turn/end`、`assistant/attempt` |
 | R7 | 多 step 收敛判定 | `<CLIENT>:473-478` | 需在当前事件面重证「最后一条即结果」，并明确 `turn/end` 与 `assistant/message` 的批内顺序假设（§11 第 4 点） |
 | R8 | 附件解析链 | `<CLIENT>:269-290` + `<HELP>:100-119` | 保留思路，但需按当前 attachment 形状重验字段名与媒体类型 |

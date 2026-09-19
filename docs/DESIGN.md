@@ -17,7 +17,7 @@
 | 传输层 | **自建 DSH host 插件 + 自有鉴权路由 + SSE 下行** | `/api` 面有 Host/Origin 栅栏 + 浏览器 cookie 鉴权，跨机非浏览器客户端接不进去；且审批无法通过该面拦截 |
 | 会话键 | AstrBot `unified_msg_origin` 原文 | 已内建私聊/群聊区分，优于 `platform:group:user` 三元组 |
 | 审批 | 可实现，走 `approval/request` waterfall + 一次性 code；**必须自加超时** | 审批服务零超时，唯一取消源是 `req.signal` |
-| 流式 | `agent/assistant-stream` → SSE `text/delta` | `assistant/chunk` 在当前版本已删除，不存在 |
+| 流式 | `session/event` → `assistant/chunk` → SSE `text/delta` | `agent/assistant-stream` 在本机 0.1.2-rc.1 **不存在**（全树扫描证伪）；`assistant/chunk` 是活事件 |
 | 部署假设 | 跨机/容器，HTTPS + 显式 token | 你的选择；与当前同机现状不同，见 §6 |
 
 **一句话**：这个项目的技术风险**不在架构分层**，而在三处「原始设计假设与源码不符」
@@ -31,7 +31,7 @@
 |---|---|---|---|
 | 1 | `Platform` 基类有三个抽象方法 `run()`/`meta()`/`send_by_session()` | 只有 `run()`/`meta()` 是 `@abc.abstractmethod`；`send_by_session()` 有默认实现 | 路线 B 不会「不实现就报错」，而是**静默发不出主动消息**——更危险 |
 | 2 | 消息进入方式为适配器 `handle_msg()` 投入事件队列 | 正确，且 `Platform` 构造函数实际以 **3 个位置参数**调用 `(platform_config, platform_settings, event_queue)`，与基类 2 参签名不同 | 仅影响路线 B（已放弃）；如将来要做，这是必踩的坑 |
-| 3 | DSH 会话事件包含 `assistant/chunk` | 该名字**已不存在**（v0 遗留，被 v1→v2 迁移器删除）。`assistant/live-chunk` 是浏览器侧合成事件，host 拿不到 | 第 3/4 层的流式与完成判定必须重写 |
+| 3 | DSH 会话事件包含 `assistant/chunk` | **该假设成立**：`assistant/chunk` 在 `KNOWN_SESSION_EVENT_TYPES`（51 项）内，是活事件；真正不存在的是 `agent/assistant-stream`（724 个 JS 全树 0 命中） | 第 3/4 层的流式照 `dsh-headless:streamReasoning` 范式实现，无需换事件面 |
 | 4 | 传输层「至少一个共享 Token」 | `ctx.webServer.register` 注册的路由**完全没有鉴权**；token/cookie 栅栏只在 `dsh-client-connection` 自己的 `/api` 路由上 | 自建路由必须**自己实现鉴权**，不能白嫖 |
 | 5 | 同机部署可用信标文件 `~/.dsh/xxx-ingress.json` 自动发现端口和 Token | 本机 `$DSH_HOME` 下**不存在**任何 `*ingress*` 文件；且你选了跨机 | 该设计整体作废，改为显式配置 `bridge_url` + `token` |
 | 6 | 参考 `dsh-qqbot-bridge` 的做法 | 该包在本机安装产物中**不存在**（`@deepseek-ai/` 下无此包） | 无法作为参考；实际可参考的是 `dsh-acp`（审批转发范例）与 `dsh-skin-market`（两半插件范例） |
@@ -72,8 +72,8 @@
 │            自建 Bearer 鉴权 + 幂等表 + 环形缓冲                    │
 │                          ↓                                          │
 │  ④Agent 执行层  ctx.agents.create() → agent.followup()              │
-│            host.on('agent/assistant-stream') → SSE text/delta       │
-│            host.on('session/event')          → message/final, turn/end│
+│            host.on('session/event') → assistant/chunk → SSE text/delta│
+│                                     → assistant/message, turn/end    │
 │            host.on('approval/request')       → waterfall + 超时     │
 │            映射持久化 state.json（原子写）                          │
 └────────────────────────────────────────────────────────────────────┘
@@ -180,7 +180,7 @@ await ctx.sessions.flush(handle.agent.session)
 
 | 用途 | 事件 | 特性 |
 |---|---|---|
-| 流式显示 | `host.on('agent/assistant-stream', ({agent, frame}) => ...)` | 瞬时、逐 token，frame = start/chunk/end，chunk 有 7 种 |
+| 流式显示 | `host.on('session/event', (session, event) => ...)` 里的 `assistant/chunk` | 瞬时、逐 token；须按 `session !== agent.session` 过滤，chunk 在 `event.data.chunk` |
 | 最终文本 / turn 边界 | `host.on('session/event', (session, event) => ...)` | 持久、一步一条，`assistant/message` / `turn/end` |
 
 **必须自己过滤**：事件虽是 `Scoped<Agent>` 派发，但未打 tag 的根 ctx 监听者会
@@ -264,7 +264,7 @@ host.on('approval/request', (request, next) => {
 |---|---|---|
 | **P0（本轮）** | 契约 + 设计 + 两侧骨架 | ✅ 本文档 + `BRIDGE-CONTRACT.md` + 两个骨架目录 |
 | **P1 打通** | DSH 侧：路由 + 鉴权 + `/health` + `/message` + `agents.create/followup/whenIdle` + SSE 推 `message/final`；AstrBot 侧：前缀触发 + 单次请求 + 整段回帖 | 端到端：QQ 发 `/dsh 你好` → DSH agent 执行 → 回复出现在 QQ。**同时实测契约 §9 的未决 #1/#2/#3** |
-| **P2 流式与审批** | `agent/assistant-stream` → `text/delta` 节流回帖；`approval/request` → 一次性 code → IM 回执 | 流式不丢头、不断片；审批超时 fail closed 且不堵 turn |
+| **P2 流式与审批** | `session/event` 的 `assistant/chunk` → `text/delta` 节流回帖；`approval/request` → 一次性 code → IM 回执 | 流式不丢头、不断片；审批超时 fail closed 且不堵 turn |
 | **P3 韧性** | 幂等表、环形缓冲 + `Last-Event-ID` 续传、429 背压、health 轮询、DSH 重启恢复 | 拔网线/重启 DSH 后不丢消息、不重复执行 |
 | **P4 呈现** | 长度切分、Markdown 降级/图片卡、图片与 attachment 回传（可搬 connector 的 `reply_render.py`） | QQ 上长回复可读、代码块可读 |
 | **P5 控制面接管** | 见 §7.2 / §7.3：用管道式转发接管控制面，搬 10 条「可直接搬」项，补权限门与集成测试 | 能力总览表逐项覆盖；测试真正发 HTTP |
@@ -273,7 +273,7 @@ host.on('approval/request', (request, next) => {
 **P1 必须先做的三件实测**（不做完不要写 P2）：
 1. `ctx.agents.create` 的模型选择装法（`installModelSelection` / `agentPresets.mount`
    / 自建 `agent/request` hook 三选一）。
-2. `agent/assistant-stream` 在真实运行进程里能否收到（本轮只读了发射点）。
+2. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**（全树扫描证伪）；流式改走 `session/event` 的 `assistant/chunk`，范式见 `dsh-headless`。
 3. 插件热装是否免重启生效。
 
 ---

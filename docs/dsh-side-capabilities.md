@@ -22,8 +22,8 @@
 | 4 | 想走鉴权 → 用 `ctx.connection.fetch.register({path, methods, requestBody, fetch})`（路径在 `/api` 之下）或 `ctx.connection.rpc.handle(channel, handler)`；也可以自己调 `ctx.connection.requestRejection(req)` 复用它的校验 | **已证实（API 声明）/ 未实跑** |
 | 5 | **存在进程内编程式会话入口**：`ctx.agents.create({sessionId, meta, agentOptions, setup}) → {agent, dispose}`，`ctx.agents.resume({resumeSessionId, ...})`。投递消息用 `agent.followup(createUserMessage(...))`，等一轮结束用 `await agent.whenIdle()`，落盘用 `ctx.sessions.flush(agent.session)` | **已证实** |
 | 6 | 工厂（factory）由 `dsh-agent-loop` 提供，本机 web profile **已挂载该插件**（`# == @deepseek-ai/dsh-web-app` 段内有 `- id: agent-loop`） | **已证实** |
-| 7 | 事件名字符串**有两套**：进程内瞬时事件（`agent/assistant-stream` 等，Cordis Events）与持久化会话事件（`turn/start`、`assistant/message`、`turn/end`…，经 `ctx.on('session/event', …)`）。用户猜测的 `"assistant/message"`、`"turn/end"` **是真实名字** | **已证实** |
-| 8 | `"assistant/chunk"` **在当前版本不是活事件**——它只是 v0 老格式的遗留名字，被 v0→v1→v2 迁移器消费/删除，且不在 `KNOWN_SESSION_EVENT_TYPES` 里。`"assistant/live-chunk"` 是**浏览器侧**合成事件，不是 host 事件 | **已证实（与"存在 assistant/chunk"的假设不符）** |
+| 7 | 事件名字符串**有两套**：进程内瞬时事件（`agent/status`/`agent/error`/`agent/inbox/inserted`/`tools/change` 等，Cordis Events；全树 `.emit("…")` 扫描**无** `agent/assistant-stream`）与持久化会话事件（`turn/start`、`assistant/message`、`turn/end`…，经 `ctx.on('session/event', …)`）。用户猜测的 `"assistant/message"`、`"turn/end"` **是真实名字** | **已证实** |
+| 8 | **【本条已修订，原记录错误】**：`"assistant/chunk"` **是活事件且是本项目唯一可用的逐 token 流式源**——它在 `KNOWN_SESSION_EVENT_TYPES`（51 项，`dsh-session\lib\types\known-event-types.js`）之内，由 `dsh-agent-loop` 在 turn 循环里 `session.append("assistant/chunk", { turn, step, chunk })` 逐片写入，经 `session/event` 分发。原记「不在清单里 / 已被迁移器删除」经全树扫描为**误**。`"assistant/live-chunk"` 是**浏览器侧**合成事件，不是 host 事件——它只是 v0 老格式的遗留名字，被 v0→v1→v2 迁移器消费/删除，且不在 `KNOWN_SESSION_EVENT_TYPES` 里。`"assistant/live-chunk"` 是**浏览器侧**合成事件，不是 host 事件 | **已证实（与"存在 assistant/chunk"的假设不符）** |
 | 9 | 审批拦截：`'approval/request'` 是 **waterfall hook**，签名 `(req, next) => Promise<ApprovalOutcome>`；**可以从 IM 异步拿答案再返回**（dsh-acp 就是这么干的）。审批服务**自身不设超时**；取消由 `req.signal` 驱动（预先 aborted → `'cancelled'`） | **已证实** |
 | 10 | 提问拦截：`'user-questions/request'`，同样是 waterfall，返回 `AskUserQuestionAnswer` | **已证实** |
 | 11 | 本机 `dsh plugin --profile web add <pkg>` **可用**（thin pnpm forwarder + 自动 reconcile `dsh.profile.bundles`），pnpm 11.22.0 已在 PATH；`dsh --profile web --dump-config` **可用**，但它会**写** `profiles\web\cordis.yml`，所以需要写权限 | **已证实（实跑）** |
@@ -597,16 +597,17 @@ export async function createWebhookSession(ctx, delivery, ruleId, request, signa
 | `'agent/pre-step'` | **waterfall** | `{ agent, messages, turn, step, signal }`, `next: () => Promise<PreStepDecision>` | `:313-319` |
 | `'agent/request'` | **waterfall** | `{ agent, turn, step, signal }`, `next: () => Promise<LlmCallConfig>` | `:336-341` |
 | `'agent/request-error'` | **waterfall** | `{ agent, turn, step, provider, failure, retryPolicy, signal }` | `:357-365` |
-| **`'agent/assistant-stream'`** | emit | `{ agent, frame }` | `:375-378` |
+| ~~`'agent/assistant-stream'`~~ | **不存在（已证伪）** | 0.1.2-rc.1 全树 724 个 `.js/.mjs/.cjs` 中 `emit("agent/assistant-stream")` **0 命中**，`AssistantStream` 0 命中；本机宿主对应行段不存在 | **已证伪** |
 | `'agent/turn-stopping'` | serial | `{ agent, turn, signal }` | `:396-400` |
 | `'agent/error'` | emit | `{ agent, turn, step, error }` | `:411-416` |
 
-**`agent/assistant-stream` 的 frame 结构**（这是拿流式文本的入口）：
+> **【已证伪，勿照抄以下类型】** 本机宿主 `@deepseek-ai/dsh@0.1.2-rc.1` 全树无 `agent/assistant-stream`、无 `AssistantStreamFrame`。流式文本的**正确入口**是 `ctx.on('session/event', (session, event) => …)` 里的 `assistant/chunk`（`event.data.chunk`，字段见 :656-676）。以下为旧文档残留，仅供比对：
 
 ```ts
 // <DSH>\dsh-agent\lib\types\runtime-types.d.ts:106-137
 /** One process-local live assistant streaming publication. */
-export type AssistantStreamFrame = {
+// 【已证伪】本机宿主中该类型不存在 —— 仅供比对
+// export type AssistantStreamFrame = {
     readonly type: 'start';
     readonly attemptId: LlmAttemptId;
     /** Monotone within one attached Agent lifecycle; replacement restarts at 1. */
@@ -675,24 +676,32 @@ export type StreamChunk = {
 };
 ```
 
-**发射点**（证明它真的会被 emit）：
+> **⚠️ 修订（宿主 0.1.2-rc.1 实证）**：本文档旧版此处记录的发射点
+> `dispatch.emit("agent/assistant-stream", { frame })` 与 `AssistantStreamAttempt`，
+> 已对 `<DSH>
+ode_modules\@deepseek-ai` 下全部 2132 个 `.js/.mjs/.cjs/.ts/.d.ts/.json`
+> 文件做全量字符串扫描：`assistant-stream` 与 `AssistantStream` **均 0 命中**（同批次
+> `assistant/message` 53 文件命中，扫描器有效）。该事件在 `0.1.2-rc.1` 中**不存在**，
+> 属于文档沿用了旧版本 / 错误包的记录。**P2 回程绝不可照抄该事件名与帧结构。**
+
+**真正的发射点**——`dsh-agent-loop` 把每个流式分片写进**持久化会话日志**：
 
 ```js
-// <DSH>\dsh-agent-loop\lib\index.js:1031-1033
-			const live = new AssistantStreamAttempt(this.session.id, ++this.assistantAttemptCounter, () => ++this.assistantStreamRevision, turn, step, (frame) => {
-				this.dispatch.emit("agent/assistant-stream", { frame });
-			});
+// <DSH>\dsh-agent-loop\lib\index.js（turn 循环内，for await (const chunk of stream)）
+		this.session.append("assistant/chunk", { turn, step, chunk });
 ```
+`session.append` 提交后即向所有订阅者广播 `session/event`（见 3.2 节），
+回调签名是 `(session, event)`，分片本体在 `event.data.chunk`。
 
-**消费范例**（`dsh-headless` 把 reasoning 打到 stderr）：
+**权威消费范例**（`dsh-headless` 把 reasoning 打到 stderr，全文仅 6040 字节 / 186 行）：
 
 ```js
-// <DSH>\dsh-headless\lib\index.js:74-109（节选）
-	const dispose = ctx.on("agent/assistant-stream", ({ agent: subject, frame }) => {
-		if (subject !== agent) return;
-		if (frame.type === "start") { close(); return; }
-		if (frame.type === "end") { close(); return; }
-		const chunk = frame.chunk;
+// <DSH>\dsh-headless\lib\index.js:74-109（节选，函数 streamReasoning）
+	const dispose = ctx.on("session/event", (session, event) => {
+		if (session !== agent.session) return;          // ← scope 过滤：按 session 对象身份
+		if (event.type === "turn/start") { close(); started = true; return; }
+		if (!started || event.type !== "assistant/chunk") return;
+		const chunk = event.data.chunk;                 // ← chunk 在 event.data.chunk
 		switch (chunk.type) {
 			case "reasoning-delta": ... stderr.write(chunk.text); return;
 			case "block-start": ...
@@ -708,7 +717,13 @@ export type StreamChunk = {
 	});
 ```
 
-**scope 过滤注意**：这些事件用 `this: Scoped<Agent>` 派发，但**未打 tag 的监听者（例如在 host 根 ctx 注册的插件）会收到所有 agent 的事件**：
+**要点**：`StreamChunk` 是**封闭联合**，`switch` 必须穷尽；未知变体应 `assertNever`
+**抛错**而非静默吞掉，否则新版本新增分片类型时会出现"流卡住但不报错"。
+`session/event` 只报**本进程内新产生**的事件（构造函数 seed 灌入的历史日志不 emit），
+若需重放历史必须自行读 store。
+
+**scope 过滤注意**：这些事件用 `this: Scoped<Session>` / `Scoped<Agent>` 派发，
+但**未打 tag 的监听者（例如在 host 根 ctx 注册的插件）会收到所有 session / agent 的事件**：
 
 ```js
 // <DSH>\dsh-scope\lib\index.js:327-338
@@ -725,7 +740,7 @@ function scopeTarget(base, key) {
 	return carrier;
 }
 ```
-所以 IM 网桥必须在 handler 内**按 `agent` / `session.id` 过滤**（`dsh-headless:75`、`dsh-acp\lib\index.js:1102-1104,1116` 都这么做）。
+所以 IM 网桥必须在 handler 内**按 `agent` / `session` 对象身份过滤**（`dsh-headless:75` 用 `session !== agent.session`，`dsh-acp\lib\index.js:1102-1104,1116` 同理）。
 
 ### 3.2 第二套：持久化会话事件（`ctx.on('session/event', ...)`，**落盘、可重放**）
 
@@ -878,11 +893,11 @@ export interface SessionEventMap {
 
 | 名字 | 事实 | 证据 |
 |---|---|---|
-| `"assistant/chunk"` | **仅 v0 老格式遗留**，被迁移器消费并删除；不在 `KNOWN_SESSION_EVENT_TYPES` 中 | `<DSH>\dsh-session-format-v0-to-v1\lib\index.js:37`（`"assistant/chunk": disposition([...])`）、`:42`；`<DSH>\dsh-session-format-v1-to-v2\lib\index.js:6`（把 `assistant/chunk` 从 retained 里过滤掉）、`:15` |
+| `"assistant/chunk"` | **【已修订】是活事件**：在 `KNOWN_SESSION_EVENT_TYPES`（51 项）中，由 `dsh-agent-loop` 逐片 append，`session/event` 可见，`event.data.chunk` 为 `StreamChunk` 封闭联合 | `dsh-session\lib\types\known-event-types.js`（含 `assistant/chunk`）；`dsh-agent-loop\lib\index.js`（append 点）；原先引用的 `v1-to-v2:6` 系**误读** | `<DSH>\dsh-session-format-v0-to-v1\lib\index.js:37`（`"assistant/chunk": disposition([...])`）、`:42`；`<DSH>\dsh-session-format-v1-to-v2\lib\index.js:6`（把 `assistant/chunk` 从 retained 里过滤掉）、`:15` |
 | `"assistant/live-chunk"` | **浏览器侧合成事件**，不是 host 事件。在 host→client 投影里由 `agent/assistant-stream` 的 chunk 帧生成 | 声明：`<DSH>\dsh-cordis-client-runner\lib\client.js:1657`；构造：`<DSH>\dsh-api-session-controller\lib\types\client\sessions\assistant-stream.js:39,109` |
 | `"assistant/delta"` 之类 | **未找到证据** | 全仓库 grep 无该字符串 |
 
-> 也就是说：**host 侧插件拿流式文本只有两条路** —— (a) 订阅 `agent/assistant-stream`（瞬时、最细、含 `text-delta`），(b) 订阅 `session/event` 等 `assistant/message`（一轮一步一次、带完整 message + stream + usage）。
+> 也就是说：**host 侧插件拿流式文本只有一条路** —— 订阅 `session/event`，取 `assistant/chunk` 的 `text-delta` / `reasoning-delta` 分片（逐 token，进程内新事件；`turn/start` 起、`turn/end` 收），末尾用 `assistant/message` 取权威全文 + `usage`。~~(a) 订阅 `agent/assistant-stream`~~ 已证伪，不存在该事件。
 
 ---
 
@@ -1511,7 +1526,7 @@ var LoggerService = class LoggerService {
 2. **`--dump-config` 在真实 home（`C:\Users\<user>\.dsh`）下未成功**。在我的沙箱里因 `profiles\web\cordis.yml` 写入被拒（EPERM）而失败。成功的那次是把 `DSH_HOME` 指向工作区副本（同样的 `package.json` + `cordis.patch.yml`，`node_modules` 用 junction 指回真实目录）。**结论的层序结论来自代码 + 该副本 dump，而非真实 home 的 dump。**
 3. **home 级 `$DSH_HOME/cordis.patch.yml` 在本机不存在**（`.dsh` 根目录只有 `settings.yaml`、`.env` 等）。我用探针副本**新建**一个才验证了它的层序，真实机器上没有这个文件。
 4. **`ctx.connection.fetch.register` / `ctx.connection.rpc.handle` 未实跑**。只读了 `.d.ts` 声明与 `register` 实现（`dsh-client-connection\lib\index.js:587-618`）。未验证：注册到 `/api` 之下的路由能否返回**流式 Response**（`rpc.d.ts:89` 只说明了 *请求体* 的 `streaming` 模式，**响应流式未在文档中声明**）、以及 `intercept('/api', ...)` 的匹配行为。
-5. **`ctx.on('agent/assistant-stream', ...)` 在真实运行的 web profile 内是否真的收到帧未实跑**。只读了发射点（`dsh-agent-loop\lib\index.js:1032`）与 scope 过滤实现（`dsh-scope\lib\index.js:327-338`）。
+5. **【已结案】** 原疑点「`ctx.on('agent/assistant-stream', ...)` 是否真能收到帧」——**该事件不存在**，无需实测：全树 `emit()` 扫描 0 命中。等价问题改为「`ctx.on('session/event', (session, event) => …)` 能否在 web profile 内实时收到 `assistant/chunk`」，照抄源 `dsh-headless\lib\index.js` 的 `streamReasoning`。
 6. **创建 agent 时"模型选择"是否必须由插件自己安装未定论**。`dsh-headless` 用 `installModelSelection(agentCtx, ...)`（`lib\index.js:141-146`），`dsh-webhook` 用 `agentPresets.mount` + 自己的 `agent/request` hook（`session.js:63-75,102-105`），`dsh-acp` 用 `AcpModelControl.install(agentCtx)`。web profile 默认 preset 是 `standard`（`docs\evidence\dump-web-composed.txt:536-539`）。**三条路径都"能跑"，但哪一条对 IM 网桥是必需/最省事，我没有实测对比。**
 7. **`dsh-agent-default-model` 的完整 API 未读**（只用了 `currentSelection()` 这一处，来自 `dsh-headless\lib\index.js:133` 与 `dsh-webhook\lib\types\session.js:36`）。其 `lib\types\index.d.ts` 未通读。
 8. **`createUserMessage` 的 `source.kind` 全集未枚举**。已证实存在的取值：`'user'`（`dsh-acp\lib\index.js:833`、`dsh-headless\lib\index.js:157`）、`'webhook'`（`dsh-webhook\lib\types\types.d.ts:60-73`）、`'plugin'`（`dsh-user-approval\lib\index.js:107-110`）。完整 `MessageSourceMap` 联合未读。
@@ -1519,7 +1534,7 @@ var LoggerService = class LoggerService {
 10. **`dsh-sdk-protocol` 的 JSON-RPC 方法名/字段未通读**（只读了 `dsh-sdk-jsonrpc-server\lib\types\server.d.ts` 的方法列表）。
 11. **安装新插件后父进程是否免重启生效未验证**。代码里有 `patchReload: "live"` 时 watch patch 文件的逻辑（`profile-boot-Dk-7KqJc.js:321-336`），但那只覆盖 patch 文件变化；**新增包需要重新 resolve/import，是否热生效我没测**。
 12. **`ctx.webServer.register` 的 handler 里未捕获异常的行为**：代码显示会 `logger.warn` + `400`（`dsh-host-webserver\lib\index.js:246-256`），但 SSE 已发头的情况是 `res.destroy()`（`:249-252`）。未按 IM 场景实测。
-13. **`agent/assistant-stream` 的 `end` 帧 `outcome.kind === 'abandoned'` 的实际触发场景未验证**（只读了类型）。
+13. ~~`agent/assistant-stream` 的 `end` 帧 `'abandoned'`~~ **该项作废**（事件不存在）。改为：`assistant/chunk` 的 `finish` 分片（`{ reason, replayState? }`）在中断/重试路径下的实际取值未实跑。
 14. **`ctx.approval` 在 IM 场景下的并发/多 answerer 行为未测**：多个插件同时注册 `approval/request` waterfall 时"先返回者 wins"，这点从 waterfall 语义（`cordis\lib\index.js:317-325`）可推断，但未实测。
 15. **DEEPSEEK 安装根目录下的 `dsh-base`/`dsh-web-app` 的完整 `cordis.patch.yml` 未逐行读**（只读了 dump 结果对应的行）。
 
@@ -1531,7 +1546,7 @@ var LoggerService = class LoggerService {
 |---|---|---|
 | 第三方注册的 HTTP 路由自带鉴权 | **不带**。鉴权只在 `dsh-client-connection` 的 `/api` 路由和它注册的 channel 上 | `dsh-client-connection\lib\index.js:552-556, 602-618, 768-781` |
 | 有内建 SSE helper | **没有**。只有 gzip 过滤器识别 `text/event-stream`，写法需手抄 `dsh-client-hmr` | `dsh-host-webserver\lib\index.js:112-114`；`dsh-client-hmr\lib\index.js:114-158` |
-| 事件名是 `"assistant/chunk"` | 当前格式**不存在**该事件；应为 `agent/assistant-stream`（瞬时）或 `session/event` + `assistant/message`（持久） | `known-event-types.js:21-78`；`dsh-session-format-v1-to-v2\lib\index.js:6` |
+| 事件名是 `"assistant/chunk"` | **【已修订】该事件就是正确的那个**：它是 `session/event` 上的活事件，流式文本取它。旧记录说「当前格式不存在」系误读 | `dsh-session\lib\types\known-event-types.js`（51 项含 `assistant/chunk`）；`dsh-agent-loop\lib\index.js`（append）；`dsh-headless\lib\index.js`（消费范式） |
 | 事件名是 `"assistant/live-chunk"` | 那是**浏览器侧**合成事件，host 拿不到 | `<DSH>\dsh-api-session-controller\lib\types\client\sessions\assistant-stream.js:39,109` |
 | 驱动 agent 需要 spawn 一个 headless 子进程 | 进程内有**一等入口** `ctx.agents.create/resume` + `agent.followup` | `dsh-agent\lib\types\index.d.ts:279-287`；`dsh-agent\lib\types\runtime-types.d.ts:192` |
 | `dsh-webhook` 可以拿来做 IM 网桥（含回推） | webhook 是 **fire-and-forget**，不返回 agent 输出、不做完成通知 | `dsh-webhook\README.zh.md:41,73` |
@@ -1595,7 +1610,8 @@ export function apply(ctx, config) {
     // ---- (1) 流式事件：host 根 ctx 上的“未打 tag”监听者会收到**所有** agent 的事件
     //          (dsh-scope/lib/index.js:327-338)，所以必须按 agent 过滤。
     //          ctx.on 自身就注册为 effect，返回 disposer，fiber 卸载自动移除（cordis:326-345, 360-365）。
-    host.on('agent/assistant-stream', ({ agent, frame }) => {
+    // 【已修订】原写法 `host.on('agent/assistant-stream', ({agent,frame}) => …)` 已证伪。
+    ctx.on('session/event', (session, event) => {
       const b = bridges.get(agent.id)
       if (!b) return
       if (frame.type === 'start') { b.push({ event: 'start', turn: frame.turn, step: frame.step }); return }
