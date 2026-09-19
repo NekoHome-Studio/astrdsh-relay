@@ -31,7 +31,7 @@
 |---|---|---|---|
 | 1 | `Platform` 基类有三个抽象方法 `run()`/`meta()`/`send_by_session()` | 只有 `run()`/`meta()` 是 `@abc.abstractmethod`；`send_by_session()` 有默认实现 | 路线 B 不会「不实现就报错」，而是**静默发不出主动消息**——更危险 |
 | 2 | 消息进入方式为适配器 `handle_msg()` 投入事件队列 | 正确，且 `Platform` 构造函数实际以 **3 个位置参数**调用 `(platform_config, platform_settings, event_queue)`，与基类 2 参签名不同 | 仅影响路线 B（已放弃）；如将来要做，这是必踩的坑 |
-| 3 | DSH 会话事件包含 `assistant/chunk` | **该假设成立**：`assistant/chunk` 在 `KNOWN_SESSION_EVENT_TYPES`（51 项）内，是活事件；真正不存在的是 `agent/assistant-stream`（724 个 JS 全树 0 命中） | 第 3/4 层的流式照 `dsh-headless:streamReasoning` 范式实现，无需换事件面 |
+| 3 | DSH 会话事件包含 `assistant/chunk` | **该假设成立**：`assistant/chunk` 在 `KNOWN_SESSION_EVENT_TYPES`（51 项）内，是活事件；`agent/assistant-stream` 只在 `0.1.2-rc.1`（724 个 JS 全树 0 命中）不存在，`0.1.5-rc.2` 起存在 | 第 3/4 层的流式照 `dsh-headless:streamReasoning` 范式实现，无需换事件面 |
 | 4 | 传输层「至少一个共享 Token」 | `ctx.webServer.register` 注册的路由**完全没有鉴权**；token/cookie 栅栏只在 `dsh-client-connection` 自己的 `/api` 路由上 | 自建路由必须**自己实现鉴权**，不能白嫖 |
 | 5 | 同机部署可用信标文件 `~/.dsh/xxx-ingress.json` 自动发现端口和 Token | 本机 `$DSH_HOME` 下**不存在**任何 `*ingress*` 文件；且你选了跨机 | 该设计整体作废，改为显式配置 `bridge_url` + `token` |
 | 6 | 参考 `dsh-qqbot-bridge` 的做法 | 该包在本机安装产物中**不存在**（`@deepseek-ai/` 下无此包） | 无法作为参考；实际可参考的是 `dsh-acp`（审批转发范例）与 `dsh-skin-market`（两半插件范例） |

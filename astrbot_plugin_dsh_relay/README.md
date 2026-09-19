@@ -37,10 +37,17 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 
 ## 安装
 
-把本目录整个拷到 AstrBot 的插件目录：
+取发布产物 `astrbot_plugin_dsh_relay-<v>.zip`（[GitHub Releases](https://github.com/NekoHome-Studio/astrdsh-relay/releases)），
+解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Copy-Item -Recurse .\astrbot_plugin_dsh_relay "$env:USERPROFILE\Downloads\AstrBot-master\data\plugins\"
+Expand-Archive .\astrbot_plugin_dsh_relay-0.3.4.zip -DestinationPath <AstrBot>\data\plugins\
+```
+
+在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：
+
+```powershell
+Copy-Item -Recurse .\astrbot_plugin_dsh_relay E:\0d00\AstrBot\data\plugins\
 ```
 
 然后在 WebUI 插件页启用并填 `bridge_url` 与 `bridge_token`。

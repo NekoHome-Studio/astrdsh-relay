@@ -12,7 +12,7 @@
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
 > 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
-> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.3`。
+> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.4`。
 
 ## 交付物地图
 
@@ -73,8 +73,11 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
    三条硬理由：`/api` 有 Host/Origin 栅栏 + 浏览器 cookie 鉴权（跨机非浏览器客户端
    接不进去）；该面只能轮询 `session.history`；**审批只能在进程内拦截**。
 
-3. **流式唯一正确的路是 `session/event` 上的 `assistant/chunk`**。它是活事件；
-   真正不存在的是 `agent/assistant-stream`（全树 724 个 JS 扫描 0 命中，已证伪）。
+3. **流式文本随宿主版本有两个来源，DSH 侧插件两条都收**。≤ `0.1.2-rc.1` 走
+   `session/event` 的 `assistant/chunk`（`chunk.type === 'text-delta'`，是活事件）；
+   ≥ `0.1.5-rc.2` 宿主改发 `agent/assistant-stream` 的 `frame.chunk`（`dsh-agent-loop`
+   的 `dispatch.emit` 点），与旧 `StreamChunk` **同形**，两侧收敛到同一个出口。
+   早先「该事件不存在」的结论只对 `0.1.2-rc.1` 成立，已按新版宿主修订，见 DESIGN §P1。
    它是瞬时事件，**必须先连 SSE 再投消息**；最终文本取同源的 `assistant/message`。
 
 ## 尚未实现（刻意响亮失败）
@@ -83,7 +86,8 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 宁可装不上也不静默降级：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
 
 原 P1 的三件实测均已结案：第三方依赖可解析、`ctx.agents.create` 模型选择装法已定、
-插件免重启生效；`agent/assistant-stream` 确认不存在，流式走 `session/event` 的 `assistant/chunk`。
+插件免重启生效；流式按宿主版本双协议收取（≤`0.1.2-rc.1` 的 `assistant/chunk` 与
+≥`0.1.5-rc.2` 的 `agent/assistant-stream`），当初的「不存在」结论已按新版修订。
 
 ## 目标：**最终替代** `astrbot_plugin_dsh_connector`
 

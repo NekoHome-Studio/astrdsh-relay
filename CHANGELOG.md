@@ -1,5 +1,18 @@
 # 更新日志
 
+## v0.3.4 — 2026-09-19
+
+### 文档（仅文档，代码无变更）
+
+- 修正流式事件的双协议口径：`agent/assistant-stream` 只在 `0.1.2-rc.1` 上全树 0 命中，
+  `0.1.5-rc.2` 起宿主改发该事件。根 `README.md`、`dsh-astrbot-relay/README.md`、
+  `docs/DESIGN.md` 里残留的「不存在 / 已证伪」无条件表述改为带版本范围的表述，
+  并写明插件双协议并存、同形 chunk 收敛到同一出口（与契约 §4.2、v0.3.2 的修复对齐）。
+- 两个子目录 README 的安装章节改为**发布产物**安装路径：DSH 侧取
+  `dsh-astrbot-relay-<v>.tgz` 走 `dsh plugin add`（并说明从 git 安装要付构建授权的代价）、
+  AstrBot 侧解压 `astrbot_plugin_dsh_relay-<v>.zip` 进 `data/plugins/`；
+  此前写的是「在本目录的上一级执行」与写死本机路径的 `Copy-Item`。
+
 ## v0.3.3 — 2026-09-19
 
 ### 修复

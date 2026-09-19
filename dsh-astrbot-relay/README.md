@@ -37,11 +37,17 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 安装
 
+取发布产物 `dsh-astrbot-relay-<v>.tgz`（[GitHub Releases](https://github.com/NekoHome-Studio/astrdsh-relay/releases)，
+或本地 `node scripts/package-release.mjs` 打到 `dist/`），或在克隆里指向本目录：
+
 ```powershell
-# 在本目录的上一级执行
-dsh plugin --profile web add ./dsh-astrbot-relay
+dsh plugin --profile web add ./dsh-astrbot-relay-0.3.4.tgz
 dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 ```
+
+本包是纯 ESM JS、无构建步骤，所以走 tgz 的安装路径**不需要** pnpm 的
+`allowBuilds` 授权；改从 git 装（`github:…#<sha>&path:dsh-astrbot-relay`）会回到
+「需要授权安装期代码」的问题上。
 
 > 注意：`--dump-config` 会**写** `%DSH_HOME%\profiles\web\cordis.yml`，
 > 在只读沙箱下会 EPERM。
@@ -73,8 +79,10 @@ dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 1. `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-llm` 作为第三方插件依赖**可解析**；
    `UserMessage` 走 `createUserMessage` 构造（deep-freeze 不可绕过）。
 2. `ctx.agents.create` 的模型选择装法已定并落地。
-3. `agent/assistant-stream` **不存在**（全树扫描证伪），流式走 `session/event` 的
-   `assistant/chunk`；插件免重启生效。
+3. `agent/assistant-stream` 在**本机 `0.1.2-rc.1`** 全树 0 命中（当初据此判为不存在），
+   **`0.1.5-rc.2` 起该事件存在**（`dsh-agent-loop/lib/index.js:1031-1033`）。故插件
+   **双协议并存**：旧事件保底、新事件取真源，同形 chunk 收敛到一个出口（契约 §4.2）。
+   插件热装免重启生效。
 
 ## 参考范例（照抄对象，全是已核实路径）
 
