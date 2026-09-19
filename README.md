@@ -102,4 +102,8 @@ base_url」被**实机推翻**：connector 的 33 个点号 endpoint **33/33 全
 
 ## 许可证
 
-MIT，见 [LICENSE](./LICENSE)。
+GNU AGPL-3.0-or-later，全文见 [LICENSE](./LICENSE)。
+Copyright (C) 2026 NekoHome-Studio。
+
+本项目是网络服务侧的桥接组件。AGPL §13 对网络服务另有要求：以网络方式对外提供服务时，
+须向使用者提供对应源码。
