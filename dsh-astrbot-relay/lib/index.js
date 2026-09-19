@@ -379,7 +379,9 @@ export function apply(ctx, config) {
       for (const bridge of bridges.values()) {
         const agent = bridge.agent
         const dispose = bridge.dispose
-        if (!agent || !dispose) continue
+        // 只要求有 agent：复用 live 的路径（见 handleMessage 的 live 优先分流）拿不到 handle，
+        // dispose 为 null，但那条会话仍要 cancel + flush，否则卸载时它的记录不落盘。
+        if (!agent) continue
         // 先摘引用再收尾：收尾期间新到的 /message 会重新 attach，不会撞上这次拆除。
         bridge.agent = null
         bridge.dispose = null
@@ -393,7 +395,9 @@ export function apply(ctx, config) {
             log?.warn?.(`${tag} ${reason}：${bridge.conversation} 排空失败，仍继续拆除：${String(error)}`)
           }
           try {
-            await dispose()
+            // 复用路径没有 handle 可拆（见 handleMessage 的 live 优先分流），
+            // 那具 agent 的 teardown 归 provider 卸载时统一排空（dsh-agent types index.d.ts:141-148）。
+            if (dispose) await dispose()
           } catch (error) {
             log?.warn?.(`${tag} ${reason}：${bridge.conversation} dispose 失败：${String(error)}`)
           }
@@ -759,24 +763,45 @@ export function apply(ctx, config) {
           },
         }
 
-        // 3) create / resume 分流（照抄 dsh-api-session-controller/lib/index.js:398-402、442-446）。
-        //    已有映射必须走 resume：对同一个 sessionId 重复 create 会被宿主当成
-        //    「会话已存在」而失败——「有映射就复用」这句注释在只有 create 的版本里
-        //    根本没落地。
-        const handle = hadMapping
-          ? await host.agents.resume({
-            resumeSessionId: brandString(bridge.dshSessionId),
-            ...attachOptions,
-          })
-          : await host.agents.create({
-            sessionId: brandString(bridge.dshSessionId),
-            meta: { cwd },
-            ...attachOptions,
-          })
-        // AgentHandle 是能力对象（{ agent, dispose }，dsh-agent/lib/types/index.d.ts:150-153）：
-        // dispose 只有持有者才调得动，存下来卸载收尾时才有得拆。
-        bridge.agent = handle.agent
-        bridge.dispose = handle.dispose
+        // 3) live 优先，冷会话才 create / resume。
+        //    宿主 resume 的前提是目标会话**不在 live registry**：
+        //    dsh-session-persistence/lib/index.js:951-965 的 prepare() 一读到
+        //    `ctx.sessions.get(id) !== undefined` 就抛
+        //    `cannot prepare session "…" while it is live`。
+        //    而本网桥的 handle 只在卸载期 dispose（见 shutdownBridges 的 ⚠️），
+        //    live 占用**不随 turn/end 释放**，所以「有映射就 resume」会在同一个
+        //    conversation 的第二封上稳定 500 —— 与密钥、配额、幂等键全都无关。
+        //    官方 dsh-api-session-controller/lib/index.js:405-408 的序是先取 live、命中即复用：
+        //    `const live = this.ctx.agents.get(sessionId); if (live !== void 0) return live;`
+        //    这里照抄同一条序。
+        const live = typeof host.agents.get === 'function'
+          ? host.agents.get(brandString(bridge.dshSessionId))
+          : void 0
+        if (live !== void 0) {
+          // 复用不产生新 handle：dispose 仍归真正建出它的那次 create/resume 的持有者
+          // （bridge.dispose，卸载期交给 shutdownBridges 拆）。若 live 是跨持有点来的
+          // （进程内首次 attach 之前别人已建过），这里拿不到 handle，但 provider 卸载会
+          // 排空并 dispose 它自己造的每一个 live（dsh-agent/lib/types/index.d.ts:141-148），
+          // 不会漏拆 agent 本体。
+          // 已知取舍：复用时上面那份 selection 快照不生效 —— 同一 agent 换模型本来就得
+          // 重建会话，官方复用路径同样沿用既有选择。
+          bridge.agent = live
+        } else {
+          const handle = hadMapping
+            ? await host.agents.resume({
+              resumeSessionId: brandString(bridge.dshSessionId),
+              ...attachOptions,
+            })
+            : await host.agents.create({
+              sessionId: brandString(bridge.dshSessionId),
+              meta: { cwd },
+              ...attachOptions,
+            })
+          // AgentHandle 是能力对象（{ agent, dispose }，dsh-agent/lib/types/index.d.ts:150-153）：
+          // dispose 只有持有者才调得动，存下来卸载收尾时才有得拆。
+          bridge.agent = handle.agent
+          bridge.dispose = handle.dispose
+        }
 
         bridge.agent.followup(createUserMessage({
           content: [{ type: 'text', text }],
