@@ -8,7 +8,7 @@
  *     **投递 POST /message（§3.1：幂等表 + 背压 + create/resume 分流 + followup）**、
  *     **幂等记账（§6.1：有界 LRU + TTL + 在途标记）**、
  *     **环形缓冲与 SSE 广播（§3.2 的 push/deliver/closeSse，含 Last-Event-ID 续传）**、
- *     **agent 事件转发（session/event 的 assistant/chunk → text/delta）**、
+ *     **agent 事件转发（旧 session/event/assistant/chunk 与新 agent/assistant-stream 双协议 → text/delta）**、
  *     **审批 waterfall（approval/request → 4 位一次性 code → POST /approval）**、
  *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
  *   - 仍未实现：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
@@ -21,9 +21,10 @@
  * 动笔前必读的三条已核实事实（写错就废）：
  *   1. `ctx.webServer.register` 注册的路由**没有任何鉴权**，必须自己实现（§5）。
  *      因此**每个**端点（包括 /health）都要过 authorize。
- *   2. `text/delta` 来自 `session/event` 上的 `assistant/chunk`（`chunk.type === 'text-delta'`），
- *      是**瞬时**事件，无订阅者即永久丢失 → IM 侧必须先连 SSE 再 POST /message。
- *      （旧稿写的 `agent/assistant-stream` 已证伪：宿主 0.1.2-rc.1 全树无此事件。）
+ *   2. `text/delta` 是**瞬时**事件，无订阅者即永久丢失 → IM 侧必须先连 SSE 再 POST /message。
+ *      来源随宿主版本而异：≤0.1.2-rc.1 是 `session/event` 的 `assistant/chunk`
+ *      （`chunk.type === 'text-delta'`）；≥0.1.5-rc.2 改为 `agent/assistant-stream` 的
+ *      `frame.chunk`（与旧 StreamChunk 同形）。两条分支都保留，即双协议兼容。
  *   3. 事件用 `Scoped<Agent>` 派发，但根 ctx 上未打 tag 的监听者会收到**所有** agent
  *      的事件 → 必须自己按 agent.id 过滤，否则串台到用户在 Web UI 的会话。
  */
@@ -448,6 +449,65 @@ export function apply(ctx, config) {
       throw new Error(`dsh-astrbot-relay: ${context} 出现未覆盖的变体：${JSON.stringify(value)}`)
     }
 
+    /**
+     * 助手流 chunk 的统一出口：旧版走 session/event 的 assistant/chunk，
+     * 新版走 agent/assistant-stream 的 frame.chunk（二者同形），语义完全一致。
+     * turn/step 由调用方给出，避免两条链路各自解包。
+     */
+    function forwardAssistantChunk(bridge, chunk, at) {
+      const turn = at?.turn
+      const step = at?.step
+      switch (chunk?.type) {
+        case 'text-delta':
+          // 只用于「边跑边显示」：最终文本一律以 message/final 为准（契约 §4.1）。
+          push(bridge.conversation, {
+            type: EVENT.TEXT_DELTA, turn, step,
+            index: chunk.index, text: chunk.text,
+          }, { ephemeral: true })
+          return
+        case 'reasoning-delta':
+          if (!config.forwardReasoning) return
+          push(bridge.conversation, {
+            type: EVENT.REASONING_DELTA, turn, step,
+            index: chunk.index, text: chunk.text,
+          }, { ephemeral: true })
+          return
+        case 'tool-call-delta': {
+          // 工具参数是流式拼出来的：按 index 聚合，到 block-end 才发完整帧。
+          const pending = bridge.toolCalls.get(chunk.index) ?? { id: '', name: '', arguments: '' }
+          if (chunk.id) pending.id = chunk.id
+          if (chunk.name) pending.name = chunk.name
+          pending.arguments += chunk.argumentsDelta ?? ''
+          bridge.toolCalls.set(chunk.index, pending)
+          return
+        }
+        case 'block-start':
+          return
+        case 'block-end': {
+          const block = chunk.block
+          if (block?.type !== 'tool-call') return
+          const pending = bridge.toolCalls.get(chunk.index)
+          const call = {
+            callId: block.id ?? pending?.id ?? '',
+            name: block.name ?? pending?.name ?? '',
+            arguments: block.arguments ?? pending?.arguments ?? '',
+          }
+          bridge.toolCalls.delete(chunk.index)
+          push(bridge.conversation, {
+            type: EVENT.TOOL_CALL, turn, step, ...call,
+          })
+          return
+        }
+        case 'usage':
+        case 'finish':
+          // 用量与结束原因不单独下行：正文看 message/final，收尾看 turn/end。
+          return
+        default:
+          assertNever(chunk, 'assistant-chunk')
+      }
+    }
+
+
     // 单监听器 + 内部 switch：多注册几个监听器只会让「谁先谁后」变成隐式契约。
     host.on('session/event', (session, event) => {
       const bridge = bridgeBySession(session)
@@ -461,55 +521,9 @@ export function apply(ctx, config) {
           return
         }
         case 'assistant/chunk': {
-          const chunk = data.chunk
-          switch (chunk?.type) {
-            case 'text-delta':
-              // 只用于「边跑边显示」：最终文本一律以 message/final 为准（契约 §4.1）。
-              push(bridge.conversation, {
-                type: EVENT.TEXT_DELTA, turn: data.turn, step: data.step,
-                index: chunk.index, text: chunk.text,
-              }, { ephemeral: true })
-              return
-            case 'reasoning-delta':
-              if (!config.forwardReasoning) return
-              push(bridge.conversation, {
-                type: EVENT.REASONING_DELTA, turn: data.turn, step: data.step,
-                index: chunk.index, text: chunk.text,
-              }, { ephemeral: true })
-              return
-            case 'tool-call-delta': {
-              // 工具参数是流式拼出来的：按 index 聚合，到 block-end 才发完整帧。
-              const pending = bridge.toolCalls.get(chunk.index) ?? { id: '', name: '', arguments: '' }
-              if (chunk.id) pending.id = chunk.id
-              if (chunk.name) pending.name = chunk.name
-              pending.arguments += chunk.argumentsDelta ?? ''
-              bridge.toolCalls.set(chunk.index, pending)
-              return
-            }
-            case 'block-start':
-              return
-            case 'block-end': {
-              const block = chunk.block
-              if (block?.type !== 'tool-call') return
-              const pending = bridge.toolCalls.get(chunk.index)
-              const call = {
-                callId: block.id ?? pending?.id ?? '',
-                name: block.name ?? pending?.name ?? '',
-                arguments: block.arguments ?? pending?.arguments ?? '',
-              }
-              bridge.toolCalls.delete(chunk.index)
-              push(bridge.conversation, {
-                type: EVENT.TOOL_CALL, turn: data.turn, step: data.step, ...call,
-              })
-              return
-            }
-            case 'usage':
-            case 'finish':
-              // 用量与结束原因不单独下行：正文看 message/final，收尾看 turn/end。
-              return
-            default:
-              assertNever(chunk, 'assistant/chunk')
-          }
+          // 旧协议（宿主 ≤ 0.1.2-rc.1）：chunk 直接挂在 session/event 上派发。
+          // 新版宿主不再发这个事件，但分支保留即构成双协议兼容（见下方 agent/assistant-stream）。
+          forwardAssistantChunk(bridge, data.chunk, { turn: data.turn, step: data.step })
           return
         }
         case 'assistant/message': {
@@ -537,6 +551,24 @@ export function apply(ctx, config) {
           return
       }
     })
+
+    // ── 新版宿主（≥ 0.1.5-rc.2）的助手流入口 ──────────────────────────────
+    // 新版不再 append assistant/chunk，改为 `dispatch.emit('agent/assistant-stream', { frame })`
+    // （dsh-agent-loop/lib/index.js:1031-1033），frame 三变体 start / chunk / end。
+    // 派发 scope 是 Scoped<Agent>：根 ctx 上未打 tag 的监听者会收到**所有** agent 的帧，
+    // 因此必须按 agent.id 过滤（与文件头第 3 条同理），否则串台到 Web UI 会话。
+    // start/end 不下行：turn 边界看 turn/start 与 turn/end，正文看 assistant/message。
+    host.on('agent/assistant-stream', (payload) => {
+      const bridge = bridgeByAgent(payload?.agent?.id)
+      if (!bridge) return
+      const frame = payload?.frame
+      if (frame?.type !== 'chunk') return
+      forwardAssistantChunk(bridge, frame.chunk, {
+        turn: frame.turn ?? bridge.turn, step: frame.step,
+      })
+    })
+
+
 
     // 心跳：必须包在 ctx.effect 里并返回 clearInterval，否则定时器会拖住进程退出。
     ctx.effect(() => {
@@ -753,13 +785,48 @@ export function apply(ctx, config) {
         const location = locationFor(conversation)
         const cwd = location.cwd ?? config.cwd
 
+        // 预设（agentPreset）是**工具行的唯一载体**：dsh-agent-presets 把工具行、提示词段与
+        // 技能目录挂在一个常驻 scope 上，agent 只能靠 setup 期的 presets.mount(agentCtx, id)
+        // 加入它；没加入的 agent 落到**空全局层**，模型手里一支工具都没有——本插件此前
+        // tools 恒为空就是这个原因（只抄了 dsh-headless 的 installModelSelection，漏了这段）。
+        // 官方权威序：dsh-api-session-controller/lib/index.js:350-363 composeAgent
+        //（presets.resolve 取 id，返回的 setup 里 presets.mount(agentCtx, resolvedId)），
+        // 以及 :441-451 ensureSession 把 resolvedId 写进 meta.agentPreset。
+        const presets = (() => {
+          try {
+            return typeof host.get === 'function' ? host.get('agentPresets') : void 0
+          } catch {
+            return void 0
+          }
+        })()
+        if (presets === void 0) {
+          // 宿主没装预设服务（不是 web profile，或被裁过的装配）。只警告不抛：
+          // 缺预设仍能对话，只是模型没有工具；把整条投递打挂是更坏的结果。
+          log?.warn?.(`${tag} agentPresets 服务缺席：本次会话不挂预设，模型将没有任何工具`)
+        }
+        // 恢复旧会话要沿用**存档里的**预设（官方 assertPresetUnchanged 的同一语义）：
+        // 存档头没有 agentPreset（本插件早期建的会话就是这种）时才回落到当前默认预设。
+        let storedPresetId
+        if (hadMapping && presets !== void 0) {
+          try {
+            const observe = host.sessionQuery?.observeSession
+            if (typeof observe === 'function') {
+              const observation = await observe.call(host.sessionQuery, brandString(bridge.dshSessionId))
+              storedPresetId = observation?.header?.agentPreset
+            }
+          } catch { /* 读不到存档头就按默认预设挂，不值得让投递失败 */ }
+        }
+        const presetId = presets === void 0 ? void 0 : (await presets.resolve(storedPresetId)).id
+
         // 每次投递取一份 selection 快照并随 agent 固定下来：
         // installModelSelection 会把选中结果回写到 .assembled。照抄 dsh-headless:126-145。
         const selection = host.agentDefaultModel.currentSelection()
         const attachOptions = {
           agentOptions: { provider: selection.provider, model: selection.model },
-          setup: (agentCtx) => {
+          setup: async (agentCtx) => {
             installModelSelection(agentCtx, { current: selection, assembled: void 0 })
+            // 顺序与官方一致：先定模型选择，再把 agent 加入预设 scope。
+            if (presets !== void 0) await presets.mount(agentCtx, presetId)
           },
         }
 
@@ -794,7 +861,12 @@ export function apply(ctx, config) {
             })
             : await host.agents.create({
               sessionId: brandString(bridge.dshSessionId),
-              meta: { cwd },
+              meta: {
+                cwd,
+                // 照抄官方 ensureSession 的写法：presetId 缺席时**不写这个键**，
+                // 写 undefined 会让存档头凭空多出一个 null 字段。
+                ...presetId === void 0 ? {} : { agentPreset: presetId },
+              },
               ...attachOptions,
             })
           // AgentHandle 是能力对象（{ agent, dispose }，dsh-agent/lib/types/index.d.ts:150-153）：
