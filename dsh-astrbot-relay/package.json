@@ -12,6 +12,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
     "lib",
     "cordis.patch.yml",
     "README.md"
