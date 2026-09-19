@@ -1,16 +1,19 @@
 # 发布流程（Releasing）
 
-> 本项目采用**统一版本**：两侧插件的版本号必须相等，一个 tag 同时发两个产物。
+> 本项目采用**统一版本**：版本号在**三处**必须相等，一个 tag 同时发两个产物。
 
-## 1. 版本号在哪两处
+## 1. 版本号在哪三处
 
 | 半边 | 文件 | 字段 |
 |---|---|---|
+| 工作区根 | `package.json` | `"version"` |
 | DSH 侧 | `dsh-astrbot-relay/package.json` | `"version"` |
 | AstrBot 侧 | `astrbot_plugin_dsh_relay/metadata.yaml` | `version:` |
 
-两处**必须相等**。`scripts/package-release.mjs` 会在打包前断言这一点，不一致直接失败。
-（不用担心忘记：CI 的「版本一致性」步骤也是同一道闸门。）
+三处**必须相等**。`scripts/package-release.mjs` 会在打包前断言 **DSH 侧与 AstrBot 侧**
+相等（工作区根不是可分发的包，根版本是「这棵树的版本」标记，由人工同步；
+CI 的「版本一致性」步骤是同一道闸门）——不放心时可以拿
+`node -e "console.log(require('./package.json').version)"` 自己对一眼。
 
 > `metadata.yaml` 的 `astrbot_version` 是**AstrBot 本体**的兼容范围
 > （`">=4.16,<5"`，PEP 440 写法、不带 `v`），跟本插件自己的 `version` 是两回事。
@@ -18,7 +21,7 @@
 ## 2. 发版步骤
 
 ```powershell
-# 1) 改版本号（两处，改同一个值）
+# 1) 改版本号（三处，改同一个值）
 # 2) 本地先跑一遍闸门与打包
 node scripts/package-release.mjs --check     # 只校验
 node scripts/package-release.mjs             # 真打包到 dist/（本地冒烟）
@@ -79,9 +82,10 @@ Get-FileHash dist/*.tgz, dist/*.zip -Algorithm SHA256
 - 版本一致性闸门；
 - 完整打包冒烟 + 校验和核对。
 
-## 6. 发布纪律：本次发布已知的“不可用”状态
+## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 
-**`v0.3.0` 已是可运行实现**，但仍有**三项配置项未实现**，必须在发布说明里如实列出：
+**`v0.3.0` 起已是可运行实现**，但下列**三项配置项至今未实现**，只要仍未落地，
+每一次发布说明都必须如实列出：
 
 - DSH 侧 `assertConfigIsUsable` 对 `hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、
   `idleTtlMs` **加载即抛错**。三者都是「宁可响亮失败，也不静默降级」。

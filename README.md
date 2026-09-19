@@ -12,7 +12,7 @@
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
 > 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
-> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.1`。
+> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.3`。
 
 ## 交付物地图
 
@@ -37,7 +37,9 @@
 
 ## 发布（Releases）
 
-两个插件采用**统一版本**：版本号在两处必须相等，一个 tag 同时发两个产物。
+本项目采用**统一版本**：版本号在**三处**必须相等（根 `package.json`、
+`dsh-astrbot-relay/package.json`、`astrbot_plugin_dsh_relay/metadata.yaml`），
+一个 tag 同时发两个产物。
 
 | 产物 | 装法 |
 |---|---|
