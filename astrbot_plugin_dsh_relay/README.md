@@ -1,4 +1,4 @@
-# astrbot_plugin_dsh_relay（星驿 · AstrBot 侧，骨架）
+# astrbot_plugin_dsh_relay（星驿 · AstrBot 侧）
 
 AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek Harness，
 并把流式输出与**敏感操作审批请求**带回聊天窗口。
@@ -17,8 +17,8 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 
 ## 当前状态
 
-**这是骨架，不是可用实现。** `BridgeTransport` 的四个方法都 `raise
-NotImplementedError`，命中时回复明确的「骨架未实现」提示，不会让 AstrBot 主流程崩掉。
+**是可运行实现。** `BridgeTransport` 的六个方法（`health` / `where` / `send_message` /
+`events` / `send_approval` / `aclose`）全部落地，无 `NotImplementedError`。
 
 | 部位 | 状态 |
 |---|---|
@@ -30,11 +30,12 @@ NotImplementedError`，命中时回复明确的「骨架未实现」提示，不
 | 契约常量（`contract.py`） | ✅ 就位 |
 | `/dsh where` 定位命令 + 本地信息（会话键/桥接地址） | ✅ 就位 |
 | 定位结果排版（`location_text.py`） | ✅ 就位（有单测） |
-| HTTP + SSE 传输层 | ⛔ TODO（P1/P2） |
-| 流式节流、幂等键复用、重试退避、health 轮询 | ⛔ TODO |
-| 主动推送 `push_to_session` | ⛔ TODO（P3，需先确认 `MessageChain` 导入路径） |
+| HTTP + SSE 传输层（`BridgeTransport` 六方法） | ✅ 就位 |
+| 流式节流回帖、幂等键复用、重试退避 | ✅ 就位 |
+| 主动推送 `push_to_session` | ✅ 就位 |
+| `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |
 
-## 安装（P1 完成后执行）
+## 安装
 
 把本目录整个拷到 AstrBot 的插件目录：
 

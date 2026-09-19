@@ -200,17 +200,20 @@ function notes(version, tag, sums, artifacts) {
   const ref = tag || `v${version}`
   return `# AstrDsh Relay（星驿）${ref}
 
-> ⚠️ **核心桥接尚未打通，但「定位」已经可用。**
+> ⚠️ **P1 + P2 全链路已打通，三项配置项仍未实现。**
 >
-> **已实现**（有单测覆盖）：DSH 侧 \`GET /where\`、\`GET /conversations\`、\`GET /health\`；
-> AstrBot 侧 \`/dsh where\` 命令；两侧的 state 持久化、配置校验与 Bearer 鉴权。
-> 它们回答的问题是「这个 IM 对话落在哪个工作区、对应哪个 DSH 会话」。
+> **已实现**（六端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
+> \`GET /conversations\`、\`POST /message\`（agent 会话驱动：create / resume / followup）、
+> \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
+> （审批 waterfall，4 位一次性 code）；含幂等（有界 LRU + TTL）、事件转发、
+> 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
+> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 六方法（health / where / send_message /
+> events / send_approval / aclose）全部实现，含 \`/dsh where\`、\`/dsh approve|reject\`、
+> 流式节流回帖与 \`push_to_session\`。
 >
-> **未实现**（会**明确**返回「未实现」，不会假装成功）：\`POST /message\`、
-> \`GET /events\`（SSE 流式）、\`POST /approval\`（审批转发），以及 agent 会话驱动本身。
-> 也就是说：**现在装上它还发不出消息、也收不到回复**。
->
-> 本版本的实际用途是：评审接口契约、验证安装链路、用定位能力排查配置。
+> **未实现**（DSH 侧 \`assertConfigIsUsable\` **加载即抛错**，不静默降级）：
+> \`hmacMode\`、非 \`one-to-one\` 的 \`policy\`（轮转策略）、\`idleTtlMs\`。
+> 只要不使用这三个配置项，本版本即可正常收发消息。
 
 ## 产物
 

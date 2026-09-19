@@ -81,11 +81,12 @@ Get-FileHash dist/*.tgz, dist/*.zip -Algorithm SHA256
 
 ## 6. 发布纪律：本次发布已知的“不可用”状态
 
-**当前版本（v0.1.x）是 P0 骨架，不能工作。** 未实现的端点在两侧都明确返回“未实现”：
+**`v0.3.0` 已是可运行实现**，但仍有**三项配置项未实现**，必须在发布说明里如实列出：
 
-- DSH 侧：`POST /message`、`GET /events`、`POST /approval` 返回
-  `501` + `unsupported`；
-- AstrBot 侧：`BridgeTransport` 的四个方法 `raise NotImplementedError`。
+- DSH 侧 `assertConfigIsUsable` 对 `hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、
+  `idleTtlMs` **加载即抛错**。三者都是「宁可响亮失败，也不静默降级」。
+- 除此之外，`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
+  `/approval` 六个端点全部可用；AstrBot 侧 `BridgeTransport` 六个方法全部实现。
 
-自动生成的 `RELEASE_NOTES.md` 会在开头显式声明这一点。**在 P1 打通之前不要移除该声明**
-——用户装上一个装得进去但跑不起来的插件，比装不上更糟。
+自动生成的 `RELEASE_NOTES.md` 会在开头显式声明“已实现 / 未实现(加载即失败)”。
+**这三项做完之前不要移除该声明。**

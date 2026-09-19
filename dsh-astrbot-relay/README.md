@@ -1,4 +1,4 @@
-# dsh-astrbot-relay（星驿 · DSH 侧，骨架）
+# dsh-astrbot-relay（星驿 · DSH 侧）
 
 DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）发来的一条消息」
 翻译成一次 DSH agent 会话执行，并把流式输出、工具事件与**审批请求**推回去。
@@ -9,8 +9,8 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**这是骨架，不是可用实现。** 未实现的端点返回 `501 unsupported` 并带明确说明，
-不会假装成功。
+**P1 + P2 已落地，是可运行实现。** 六个端点全部有真实 handler；仅三项配置项未实现，
+命中时 `assertConfigIsUsable` **加载即抛错**，不静默降级。
 
 | 部位 | 状态 |
 |---|---|
@@ -22,9 +22,12 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `GET /health`（含 cwd/statePath 等定位诊断） | ✅ 就位 |
 | `GET /where`、`GET /conversations`（定位，契约 §12） | ✅ 就位 |
 | 会话标题渲染 + `state.json` 原子读写 | ✅ 就位 |
-| `POST /message`、`GET /events`（SSE）、`POST /approval` | ⛔ TODO（P1/P2） |
-| agent 会话驱动、事件转发、审批 waterfall、幂等/背压/环形缓冲 | ⛔ TODO |
-| 映射的**写入**路径（建立/回收会话时落盘） | ⛔ TODO（P1；读取已就位） |
+| `POST /message`（agent 会话驱动） | ✅ 就位（`agents.create` / `followup` / `whenIdle`） |
+| `GET /events`（SSE 下行 + 事件转发） | ✅ 就位（环形缓冲 + `push` / `deliver` / `Last-Event-ID` 续传） |
+| `POST /approval`（审批 waterfall） | ✅ 就位（4 位一次性 code，`askApproval` 挂 `approval/request`） |
+| 幂等（有界 LRU + TTL）、卸载期 `cancel → whenIdle → flush → dispose` 收尾 | ✅ 就位 |
+| 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
+| `hmacMode`、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` | ⛔ 未实现（**加载即失败**） |
 
 ## 为什么不用现成的 `/api/<method>` RPC 面
 
@@ -32,7 +35,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 浏览器 cookie 鉴权接不进去；该面只能轮询 `session.history`；**审批只能在进程内
 拦截**，`/api` 面根本够不着。
 
-## 安装（P1 完成后执行，现在装着也无法工作）
+## 安装
 
 ```powershell
 # 在本目录的上一级执行
@@ -65,15 +68,13 @@ dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 3. agent 事件虽是 `Scoped<Agent>` 派发，但**根 ctx 上未打 tag 的监听者会收到所有
    agent 的事件**。必须自己按 `agent.id` 过滤，否则会串台到用户在 Web UI 里的会话。
 
-## 动笔前必须实测的三件事（契约 §9）
+## 契约 §9 的三件实测（均已结案）
 
-1. `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-llm` 作为**第三方插件**的依赖
-   能否解析（已核实的两个真实插件都不 import 运行时包；但构造 `UserMessage` 需要
-   `createUserMessage`，它会 deep-freeze 消息，手写对象会绕过 freeze）。
-2. `ctx.agents.create` 的模型选择装法：`installModelSelection` /
-   `agentPresets.mount` / 自建 `agent/request` hook，三选一。
-3. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**；
-   以及新装插件是否免重启生效。
+1. `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-llm` 作为第三方插件依赖**可解析**；
+   `UserMessage` 走 `createUserMessage` 构造（deep-freeze 不可绕过）。
+2. `ctx.agents.create` 的模型选择装法已定并落地。
+3. `agent/assistant-stream` **不存在**（全树扫描证伪），流式走 `session/event` 的
+   `assistant/chunk`；插件免重启生效。
 
 ## 参考范例（照抄对象，全是已核实路径）
 

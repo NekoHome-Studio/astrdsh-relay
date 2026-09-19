@@ -10,8 +10,9 @@
 | AstrBot 侧插件 | astrbot_plugin_dsh_relay |
 | DSH 侧插件 | dsh-astrbot-relay |
 
-> 本轮交付：**设计 + 契约 + 两侧骨架**。没有可运行实现。
-> 两个骨架里未完成的部位会明确返回"未实现"，不会假装成功。
+> 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
+> 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
+> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.0`。
 
 ## 交付物地图
 
@@ -25,8 +26,8 @@
 | `docs/control-plane-transport.md` | 控制面传输可行性调研：能否在进程内调用/转发 DSH host RPC（决定替代成本）。 |
 | `.probe/probe-api.mjs` | 控制面调研的可复现**只读**探针脚本（自签 cookie 走 33 个 endpoint，验证点号写法全 404、斜杠写法 200）。 |
 | `docs/evidence/` | 实跑固化证据（`dsh --profile web --dump-config` 的实际层组合输出）。 |
-| `dsh-astrbot-relay/` | DSH 侧 host 插件骨架（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js`）。 |
-| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件骨架（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py`）。 |
+| `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js`，六个端点全部落地）。 |
+| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py`，传输层六个方法全部实现）。 |
 | `docs/RELEASING.md` | 发版流程：统一版本规则、tag 约定、产物形态与原因、CI 检查项。 |
 | `scripts/package-release.mjs` | 打包脚本：校验 tag 与两侧版本 → 产出 tgz + zip + SHA256SUMS + 发布说明。 |
 | `scripts/check-contract-parity.mjs` | 两侧契约常量一致性闸门（事件类型 / 错误码 / 路由 / 版本）。 |
@@ -56,8 +57,10 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 
 流程细节、产物形态的理由、CI 检查项见 `docs/RELEASING.md`。
 
-> ⚠️ 当前 `v0.1.x` 是 **P0 骨架**：装得上，但跑不起来（未实现端点返回「未实现」）。
-> 自动生成的发布说明会在开头显式声明这一点，P1 打通前不要移除。
+> **`v0.3.0` 起是可运行实现**：`/health`、`/where`、`/conversations`、`/message`、
+> `/events`（SSE 流式）、`/approval` 六个端点全部落地，AstrBot 侧 `BridgeTransport`
+> 的 `health` / `where` / `send_message` / `events` / `send_approval` / `aclose` 全部实现。
+> 自动生成的发布说明会如实列出「已实现」与「三项未实现（加载即失败）」。
 ## 三个决定性结论（都改变了原始设计）
 
 1. **路线选 A**：AstrBot 侧普通 Star 插件，复用现有 IM 适配器。
@@ -72,11 +75,13 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
    真正不存在的是 `agent/assistant-stream`（全树 724 个 JS 扫描 0 命中，已证伪）。
    它是瞬时事件，**必须先连 SSE 再投消息**；最终文本取同源的 `assistant/message`。
 
-## 下一步（P1）需要先实测三件事
+## 尚未实现（刻意响亮失败）
 
-1. `@deepseek-ai/schemastery` / `@deepseek-ai/dsh-llm` 作为第三方插件依赖能否解析。
-2. `ctx.agents.create` 的模型选择装法（三条候选路径）。
-3. 插件是否免重启生效。（原「`agent/assistant-stream` 能否收到」已结案：该事件不存在）
+契约里预留的三个配置项还没做，命中时 `assertConfigIsUsable` **加载即抛错**，
+宁可装不上也不静默降级：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
+
+原 P1 的三件实测均已结案：第三方依赖可解析、`ctx.agents.create` 模型选择装法已定、
+插件免重启生效；`agent/assistant-stream` 确认不存在，流式走 `session/event` 的 `assistant/chunk`。
 
 ## 目标：**最终替代** `astrbot_plugin_dsh_connector`
 

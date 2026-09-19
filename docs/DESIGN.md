@@ -262,19 +262,21 @@ host.on('approval/request', (request, next) => {
 
 | 阶段 | 内容 | 出口标准 |
 |---|---|---|
-| **P0（本轮）** | 契约 + 设计 + 两侧骨架 | ✅ 本文档 + `BRIDGE-CONTRACT.md` + 两个骨架目录 |
-| **P1 打通** | DSH 侧：路由 + 鉴权 + `/health` + `/message` + `agents.create/followup/whenIdle` + SSE 推 `message/final`；AstrBot 侧：前缀触发 + 单次请求 + 整段回帖 | 端到端：QQ 发 `/dsh 你好` → DSH agent 执行 → 回复出现在 QQ。**同时实测契约 §9 的未决 #1/#2/#3** |
-| **P2 流式与审批** | `session/event` 的 `assistant/chunk` → `text/delta` 节流回帖；`approval/request` → 一次性 code → IM 回执 | 流式不丢头、不断片；审批超时 fail closed 且不堵 turn |
-| **P3 韧性** | 幂等表、环形缓冲 + `Last-Event-ID` 续传、429 背压、health 轮询、DSH 重启恢复 | 拔网线/重启 DSH 后不丢消息、不重复执行 |
+| **P0** | 契约 + 设计 + 两侧骨架 | ✅ 本文档 + `BRIDGE-CONTRACT.md` + 两个插件目录 |
+| **P1 打通** | DSH 侧：路由 + 鉴权 + `/health` + `/message` + `agents.create/followup/whenIdle` + SSE 推 `message/final`；AstrBot 侧：前缀触发 + 单次请求 + 整段回帖 | ✅ 已达成：六端点全部有真实 handler，`BridgeTransport` 六方法全部实现；契约 §9 三件实测已结案 |
+| **P2 流式与审批** | `session/event` 的 `assistant/chunk` → `text/delta` 节流回帖；`approval/request` → 一次性 code → IM 回执 | ✅ 已达成：SSE 下行 + agent 事件转发 + 审批 waterfall（4 位一次性 code，超时 fail closed） |
+| **P3 韧性** | 幂等表、环形缓冲 + `Last-Event-ID` 续传、429 背压、health 轮询、DSH 重启恢复 | 🚧 部分落地：幂等有界 LRU + TTL、环形缓冲与 `Last-Event-ID` 续传、429 背压、AstrBot 侧 health/重试退避已就位；DSH 重启恢复待验证 |
 | **P4 呈现** | 长度切分、Markdown 降级/图片卡、图片与 attachment 回传（可搬 connector 的 `reply_render.py`） | QQ 上长回复可读、代码块可读 |
 | **P5 控制面接管** | 见 §7.2 / §7.3：用管道式转发接管控制面，搬 10 条「可直接搬」项，补权限门与集成测试 | 能力总览表逐项覆盖；测试真正发 HTTP |
 | **P6 退役** | 见 §7.2：前缀完全覆盖，移除 connector | 卸载 connector 不丢功能 |
 
-**P1 必须先做的三件实测**（不做完不要写 P2）：
-1. `ctx.agents.create` 的模型选择装法（`installModelSelection` / `agentPresets.mount`
-   / 自建 `agent/request` hook 三选一）。
-2. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**（全树扫描证伪）；流式改走 `session/event` 的 `assistant/chunk`，范式见 `dsh-headless`。
-3. 插件热装是否免重启生效。
+**P1 三件实测（均已结案）**：
+1. `ctx.agents.create` 的模型选择装法已定并落地。
+2. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**（全树扫描证伪）；流式走 `session/event` 的 `assistant/chunk`，范式见 `dsh-headless`。
+3. 插件热装免重启生效。
+
+**仍未实现的三项配置**（`assertConfigIsUsable` 命中即抛错，不静默降级）：
+`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
 
 ---
 

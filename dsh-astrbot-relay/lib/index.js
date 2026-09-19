@@ -1,16 +1,18 @@
 /**
  * dsh-astrbot-relay（星驿）— IM ↔ DSH 网桥（DSH 侧 / host half）
  *
- * 这是**骨架 + 已实现部分**：
+ * 这是**六个端点全部落地的可运行实现**：
  *   - 已实现：插件契约（name / inject / Config / apply）、配置与 state 校验、
  *     路由表、Bearer 定长鉴权、健康检查、**定位（契约 §12）**、
  *     会话标题渲染、state.json 的原子读写、
  *     **投递 POST /message（§3.1：幂等表 + 背压 + create/resume 分流 + followup）**、
  *     **幂等记账（§6.1：有界 LRU + TTL + 在途标记）**、
- *     **环形缓冲与 SSE 广播骨架（§3.2 的 push/deliver/trimBuffer）**。
- *   - 未实现：SSE 端点接线、事件转发、审批 waterfall、轮转策略。
- *     未实现处一律返回 **501 not_implemented**（不是 400 unsupported：请求合法，是本端没做），
- *     并带明确的 TODO，**不会**假装成功。
+ *     **环形缓冲与 SSE 广播（§3.2 的 push/deliver/closeSse，含 Last-Event-ID 续传）**、
+ *     **agent 事件转发（session/event 的 assistant/chunk → text/delta）**、
+ *     **审批 waterfall（approval/request → 4 位一次性 code → POST /approval）**、
+ *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
+ *   - 仍未实现：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
+ *     三者都在 `assertConfigIsUsable` 里**加载即抛错**，宁可装不上也不静默降级。
  *
  * 契约真相来源：`docs/BRIDGE-CONTRACT.md`
  * 设计依据：    `docs/DESIGN.md` §3
