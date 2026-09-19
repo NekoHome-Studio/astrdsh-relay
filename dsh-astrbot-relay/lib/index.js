@@ -320,6 +320,51 @@ export function apply(ctx, config) {
       }
     }, `${name}: routes`)
 
+    /**
+     * 卸载收尾（TODO(P1) 落地，顺序见契约 §9 未决 #1）：
+     * cancel({ kind: 'user' }) → await whenIdle() → await sessions.flush(agent.session) → dispose()。
+     *
+     * ⚠️ dispose() 的语义是「停 loop、注销 agent、**把该会话从 store 里删掉**、展开 scope」
+     *    （dsh-agent/lib/types/index.d.ts:136-153），所以它只能在**卸载期**调：
+     *    放进 handleMessage 的 .finally() 会把下一轮 resume 的前提拆掉，静默变「每轮都是新会话」。
+     *    AgentCancelCause 是 `{ kind: 'user' }` 而非自由对象（dsh-session/lib/types/index.d.ts）。
+     */
+    async function shutdownBridges(reason) {
+      const pending = []
+      for (const bridge of bridges.values()) {
+        const agent = bridge.agent
+        const dispose = bridge.dispose
+        if (!agent || !dispose) continue
+        // 先摘引用再收尾：收尾期间新到的 /message 会重新 attach，不会撞上这次拆除。
+        bridge.agent = null
+        bridge.dispose = null
+        pending.push((async () => {
+          try {
+            agent.cancel({ kind: 'user' })
+            await agent.whenIdle()
+            await host.sessions.flush(agent.session)
+          } catch (error) {
+            // 收尾失败也必须继续 dispose，否则 handle 永远留在 registry 里。
+            log?.warn?.(`${tag} ${reason}：${bridge.conversation} 排空失败，仍继续拆除：${String(error)}`)
+          }
+          try {
+            await dispose()
+          } catch (error) {
+            log?.warn?.(`${tag} ${reason}：${bridge.conversation} dispose 失败：${String(error)}`)
+          }
+        })())
+      }
+      await Promise.allSettled(pending)
+      persistRecords()
+    }
+
+    ctx.effect(() => () => {
+      // Cordis 的 disposer 不等 Promise，所以这里只能挂出去；必须接住 rejection，否则算 unhandled。
+      shutdownBridges('卸载收尾').catch((error) => {
+        log?.warn?.(`${tag} 卸载收尾异常：${String(error)}`)
+      })
+    }, `${name}: shutdown`)
+
     // ────────────────────────────────────────────────────────────────
     // agent 事件转发（实现阶段填充）
     // ────────────────────────────────────────────────────────────────
@@ -543,14 +588,14 @@ export function apply(ctx, config) {
         bridge.agent = handle.agent
         bridge.dispose = handle.dispose
 
-        agent.followup(createUserMessage({
+        bridge.agent.followup(createUserMessage({
           content: [{ type: 'text', text }],
           source: { kind: 'user' },
         }))
 
         // 3) 不阻塞响应：空闲后 flush 会话记录再放掉在途计数（契约 §9 顺序）。
-        agent.whenIdle()
-          .then(() => host.sessions.flush(agent.session))
+        bridge.agent.whenIdle()
+          .then(() => host.sessions.flush(bridge.agent.session))
           .catch((error) => log?.warn?.(`${tag} 会话收尾失败：${String(error)}`))
           .finally(() => {
             bridge.queue = Math.max(0, bridge.queue - 1)
