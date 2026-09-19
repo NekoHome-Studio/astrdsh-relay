@@ -159,6 +159,10 @@ export function apply(ctx, config) {
           seq: 0,
           approvals: new Map(),
           turn: 0,
+          // 新版助手流的 start 帧带着 {attemptId, turn, step}，而 chunk 帧**不带**
+          // （dsh-agent/lib/types/runtime-types.d.ts 的 AssistantStreamFrame），
+          // 所以必须在 start 时记下来，否则新协议下 step 恒为 undefined。
+          attempt: null,
           toolCalls: new Map(),
         }
         bridges.set(conversation, bridge)
@@ -562,10 +566,24 @@ export function apply(ctx, config) {
       const bridge = bridgeByAgent(payload?.agent?.id)
       if (!bridge) return
       const frame = payload?.frame
-      if (frame?.type !== 'chunk') return
-      forwardAssistantChunk(bridge, frame.chunk, {
-        turn: frame.turn ?? bridge.turn, step: frame.step,
-      })
+      if (!frame) return
+      if (frame.type === 'start') {
+        // chunk/end 帧不带 turn/step，只有 start 帧带：
+        // 在这里把 (attemptId → turn/step) 记下来，chunk 才有准确的归属。
+        bridge.attempt = { id: frame.attemptId, turn: frame.turn, step: frame.step }
+        return
+      }
+      if (frame.type === 'end') {
+        if (bridge.attempt?.id === frame.attemptId) bridge.attempt = null
+        return
+      }
+      if (frame.type !== 'chunk') return
+      // 对得上 attemptId 就用 start 帧的记录；对不上（漏了 start 的极端情况）
+      // 才回落到 session/event 维持的 bridge.turn，step 保持 undefined 而不是瞎填。
+      const at = bridge.attempt?.id === frame.attemptId
+        ? { turn: bridge.attempt.turn, step: bridge.attempt.step }
+        : { turn: bridge.turn, step: void 0 }
+      forwardAssistantChunk(bridge, frame.chunk, at)
     })
 
 
@@ -808,13 +826,19 @@ export function apply(ctx, config) {
         // 存档头没有 agentPreset（本插件早期建的会话就是这种）时才回落到当前默认预设。
         let storedPresetId
         if (hadMapping && presets !== void 0) {
+          let observation
           try {
             const observe = host.sessionQuery?.observeSession
             if (typeof observe === 'function') {
-              const observation = await observe.call(host.sessionQuery, brandString(bridge.dshSessionId))
+              observation = await observe.call(host.sessionQuery, brandString(bridge.dshSessionId))
               storedPresetId = observation?.header?.agentPreset
             }
-          } catch { /* 读不到存档头就按默认预设挂，不值得让投递失败 */ }
+          } catch { /* 读不到存档头就按默认预设挂，不值得让投递失败 */ } finally {
+            // SessionObservation 是**租约**（dsh-session-query/lib/types/observation.d.ts：
+            // 「pinning it until every lease releases」），不释放会 pin 住 prepared 缓存条目
+            // 让缓存无法淘汰。官方的调用点一律用 using/__addDisposableResource 释放。
+            observation?.[Symbol.dispose]?.()
+          }
         }
         const presetId = presets === void 0 ? void 0 : (await presets.resolve(storedPresetId)).id
 

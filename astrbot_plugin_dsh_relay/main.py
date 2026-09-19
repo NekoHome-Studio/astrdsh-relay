@@ -732,6 +732,11 @@ class Main(Star):
             flush_chars,
             int(self._cfg("flush_hard_chars", 0) or 0) or max(flush_chars * 3, 600),
         )
+        # 中间分片走 ``event.send``，不经过 AstrBot 自己的长度切分阶段，
+        # 单条上限只能由这里自己守：再大也不超过 ``chunk_size``，
+        # 免得一条流式回帖比最后一片还长（观感与限流都不划算）。
+        chunk_size = max(1, int(self._cfg("chunk_size", 800) or 1))
+        hard_chars = min(hard_chars, chunk_size)
         total = float(self._cfg("request_timeout", 600) or 600)
         deadline = time.monotonic() + max(30.0, total)
 

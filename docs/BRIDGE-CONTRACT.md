@@ -211,6 +211,23 @@ IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不�
    最终文本一律以 `message/final` 为准；`text/delta` 只用于「边跑边显示」，
    不得作为最终回复拼接（多 step 任务会重复叠加）。
 
+### 4.2 事件来源随宿主版本分叉（双侧都要收）
+
+| 宿主版本 | `text/delta`、`reasoning/delta`、`tool/call` 的真源 |
+|---|---|
+| ≤ `0.1.2-rc.1` | `session/event` 的 `assistant/chunk`（`chunk` 挂在事件上） |
+| ≥ `0.1.5-rc.2` | `agent/assistant-stream` 的 `frame.type === 'chunk'`（`frame.chunk`，同形） |
+
+- 两侧是**同一个 chunk 形状**，DSH 侧插件必须收敛到一个出口（本仓库为
+  `forwardAssistantChunk`），不得为两条链路各写一份 switch。
+- **`turn` / `step` 只在 `start` 帧上**（`frame.type === 'start'` 带
+  `{ attemptId, turn, step }`；`chunk`/`end` 帧不带，见
+  `dsh-agent/lib/types/runtime-types.d.ts` 的 `AssistantStreamFrame`）。
+  因此收到 `start` 帧时必须按 `attemptId` 记下归属，`chunk` 帧再用它；
+  否则新宿主下 `step` 恒为 `undefined`。
+- 该事件的派发 scope 是 `Scoped<Agent>`：根 ctx 上未打 tag 的监听者会收到
+  **所有** agent 的帧，必须按 `agent.id` 过滤（同 §4.1 第 2 条）。
+
 ---
 
 ## 5. 鉴权与安全

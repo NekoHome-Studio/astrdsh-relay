@@ -219,13 +219,19 @@ host.on('approval/request', (request, next) => {
 - 因此策略是：**中间分片用 `await event.send()` 直接发出**（避开合并转发与
   转图），**最后一片用 `yield plain_result()`** 走正常结果链路。
   AstrBot 侧骨架已按此结构写好。
-- 切分点优先取段落/代码围栏边界，而不是硬按字符数截断。
+- 切分点优先取**句末标点/换行**（切点不落在未闭合的代码围栏内部），
+  `flush_chars` 之上找不到边界时最多容忍到 `flush_hard_chars` 才硬切。
 
 **(b) 流式节流。**
 - IM 平台没有「编辑消息」的通用抽象（aiocqhttp 侧是按句分段发送），
   所以原始设计的「按时间窗口合并后更新消息」在 QQ 上退化为「按窗口分片发送」。
 - 实现：`text/delta` 累积到一个 buffer，按 `throttleMs`（默认 2500）或
-  达到 `flushChars`（默认 200）时 flush 一次。
+  达到 `flushChars`（默认 200）时 flush 一次；切点按 `_pick_cut` 回退到最近的
+  句末标点（含换行），不会落在未闭合的代码围栏内，最多回退 16 个候选边界。
+- 上限：`flushHardChars`（默认 0 = 自动取 `max(3 × flushChars, 600)`，
+  再与 `chunkSize` 取小）是硬切上限——过了它必须有边界也好、没边界也好都得发，
+  保证流式不被卡死；与 `chunkSize` 取小是自保，中间分片走 `event.send`
+  不经过 AstrBot 的切分阶段，单条上限只能插件自己守。
 - 安全阀：若 turn 结束时 buffer 非空，**强制 flush**，否则尾字丢失。
 
 **(c) Markdown 降级。**
@@ -242,7 +248,7 @@ host.on('approval/request', (request, next) => {
 ### AstrBot 侧（`_conf_schema.json`）
 
 `bridge_url`、`bridge_token`(`secret`)、`trigger_prefix`、`allow_from`（白名单）、
-`reply_in_private_only`、`timeout`、`throttle_ms`、`flush_chars`、`chunk_size`、
+`reply_in_private_only`、`timeout`、`throttle_ms`、`flush_chars`、`flush_hard_chars`、`chunk_size`、
 `reply_render_mode`、`approval_enabled`、`health_interval_ms`、`retry_max_attempts`、
 `ca_bundle_path`、`allow_insecure_http`。
 
@@ -272,7 +278,10 @@ host.on('approval/request', (request, next) => {
 
 **P1 三件实测（均已结案）**：
 1. `ctx.agents.create` 的模型选择装法已定并落地。
-2. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案：该事件不存在**（全树扫描证伪）；流式走 `session/event` 的 `assistant/chunk`，范式见 `dsh-headless`。
+2. ~~`agent/assistant-stream` 在真实运行进程里能否收到~~ **已结案，当初的证伪是错的**：
+   宿主 ≤ 0.1.2-rc.1 只有 `session/event` 的 `assistant/chunk`；**0.1.5-rc.2 起**
+   （`dsh-agent-loop/lib/index.js:1031-1033` 的 `dispatch.emit('agent/assistant-stream', { frame })`）
+   改走 `assistant-stream` 帧流。两侧都要收：旧事件保底、新事件取真源，见契约 §4.2。
 3. 插件热装免重启生效。
 
 **仍未实现的三项配置**（`assertConfigIsUsable` 命中即抛错，不静默降级）：
