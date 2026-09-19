@@ -733,10 +733,11 @@ class Main(Star):
             int(self._cfg("flush_hard_chars", 0) or 0) or max(flush_chars * 3, 600),
         )
         # 中间分片走 ``event.send``，不经过 AstrBot 自己的长度切分阶段，
-        # 单条上限只能由这里自己守：再大也不超过 ``chunk_size``，
-        # 免得一条流式回帖比最后一片还长（观感与限流都不划算）。
-        chunk_size = max(1, int(self._cfg("chunk_size", 800) or 1))
-        hard_chars = min(hard_chars, chunk_size)
+        # 单条上限只能由这里自己守。硬切阈值向 ``chunk_size`` 收敛；
+        # ``chunk_size=0`` 的语义是「不切分」，此时不设上限（也绝不缩成 1）。
+        im_limit = int(self._cfg("chunk_size", 800) or 0)
+        if im_limit > 0:
+            hard_chars = min(hard_chars, im_limit)
         total = float(self._cfg("request_timeout", 600) or 600)
         deadline = time.monotonic() + max(30.0, total)
 
@@ -1113,12 +1114,17 @@ def _pick_cut(pending: str, soft: int, hard: int) -> int:
 
     规则：优先切在句末标点 / 换行之后，并且切点不能落在未闭合的代码围栏内部；
     一直攒到 ``hard`` 仍找不到边界时才硬切。这样流式回帖不会从句子中间劈开。
+
+    切点上限是 ``hard`` 本身：候选搜索的起点也压在 ``hard`` 上，否则一次超大
+    ``delta`` 会把整段 pending 一次性放行（切点远超单条上限），那条路径就绕过
+    调用方设的上限了。
     """
     soft = max(1, int(soft or 1))
     hard = max(soft, int(hard or soft))
     limit = len(pending)
+    cap = min(limit, hard)  # 切点上限：硬阈值即单条自守上限
 
-    cursor = limit
+    cursor = cap
     for _ in range(16):  # 最多回退 16 个候选边界，避免病态长文本反复扫描
         end = max((pending.rfind(ch, 0, cursor) for ch in _SENTENCE_ENDS), default=-1) + 1
         if end < soft:
@@ -1128,7 +1134,7 @@ def _pick_cut(pending: str, soft: int, hard: int) -> int:
         cursor = end - 1
 
     if limit >= hard:
-        cursor = limit
+        cursor = cap
         for _ in range(16):
             line_end = pending.rfind("\n", 0, cursor) + 1
             if line_end < soft:
@@ -1136,7 +1142,7 @@ def _pick_cut(pending: str, soft: int, hard: int) -> int:
             if not _fence_open_before(pending, line_end):
                 return line_end
             cursor = line_end - 1
-        return limit  # 实在没有边界：硬切，保证流式不被卡死
+        return cap  # 实在没有边界：硬切到上限，保证流式不被卡死
     return 0
 
 
