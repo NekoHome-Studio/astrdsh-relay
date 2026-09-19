@@ -68,15 +68,15 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
    三条硬理由：`/api` 有 Host/Origin 栅栏 + 浏览器 cookie 鉴权（跨机非浏览器客户端
    接不进去）；该面只能轮询 `session.history`；**审批只能在进程内拦截**。
 
-3. **`assistant/chunk` 在当前 DSH 版本已不存在**（v0 遗留）。流式要用
-   `agent/assistant-stream` 的 `text-delta`（瞬时事件，**必须先连 SSE 再投消息**），
-   最终文本用 `session/event` 的 `assistant/message`。
+3. **流式唯一正确的路是 `session/event` 上的 `assistant/chunk`**。它是活事件；
+   真正不存在的是 `agent/assistant-stream`（全树 724 个 JS 扫描 0 命中，已证伪）。
+   它是瞬时事件，**必须先连 SSE 再投消息**；最终文本取同源的 `assistant/message`。
 
 ## 下一步（P1）需要先实测三件事
 
 1. `@deepseek-ai/schemastery` / `@deepseek-ai/dsh-llm` 作为第三方插件依赖能否解析。
 2. `ctx.agents.create` 的模型选择装法（三条候选路径）。
-3. `agent/assistant-stream` 在真实运行进程里能否收到；插件是否免重启生效。
+3. 插件是否免重启生效。（原「`agent/assistant-stream` 能否收到」已结案：该事件不存在）
 
 ## 目标：**最终替代** `astrbot_plugin_dsh_connector`
 

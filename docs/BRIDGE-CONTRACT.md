@@ -187,9 +187,9 @@ IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不�
 | `type` | 载荷 | DSH 侧来源【已证实】 |
 |---|---|---|
 | `turn/start` | `turn` | `session/event` → `turn/start` |
-| `text/delta` | `text` | `agent/assistant-stream` → `frame.chunk.type === 'text-delta'` |
+| `text/delta` | `text` | `session/event` → `event.data.chunk.type === 'text-delta'` |
 | `reasoning/delta` | `text` | 同上 → `'reasoning-delta'`（受 `forwardReasoning` 配置控制，默认关） |
-| `tool/call` | `callId`, `name`, `argsPreview` | `agent/assistant-stream` → `'tool-call-delta'` 聚合后 |
+| `tool/call` | `callId`, `name`, `argsPreview` | `session/event` → `'tool-call-delta'` 聚合后 |
 | `approval/required` | `callId`, `code`, `toolName`, `reason`, `expiresAt` | `approval/request` waterfall |
 | `approval/resolved` | `callId`, `outcome` | 同上，决议后回填 |
 | `message/final` | `text` | `session/event` → `assistant/message`（**权威最终文本**） |
@@ -199,8 +199,8 @@ IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不�
 
 ### 4.1 三条实现约束（来自核实结论，写错就废）
 
-1. **`text/delta` 是瞬时事件，不属于会话历史。** 它由 `agent/assistant-stream`
-   发出，进程内可见；一旦没有订阅者就永久丢失。因此 `/events` **必须在投递消息
+1. **`text/delta` 是瞬时事件，不属于会话历史。** 它由 `session/event` 的
+   `assistant/chunk` 发出，进程内可见；一旦没有订阅者就永久丢失。因此 `/events` **必须在投递消息
    之前建立**，否则开头几个 token 会丢。IM 侧的顺序固定为：先连 SSE → 再 POST
    `/message`。
 2. **事件是 `Scoped<Agent>` 派发，但未打 tag 的根 ctx 监听者会收到所有 agent 的

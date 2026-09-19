@@ -19,13 +19,14 @@
  * 动笔前必读的三条已核实事实（写错就废）：
  *   1. `ctx.webServer.register` 注册的路由**没有任何鉴权**，必须自己实现（§5）。
  *      因此**每个**端点（包括 /health）都要过 authorize。
- *   2. `text/delta` 来自 `agent/assistant-stream`，是**瞬时**事件，无订阅者即永久丢失
- *      → IM 侧必须先连 SSE 再 POST /message。
+ *   2. `text/delta` 来自 `session/event` 上的 `assistant/chunk`（`chunk.type === 'text-delta'`），
+ *      是**瞬时**事件，无订阅者即永久丢失 → IM 侧必须先连 SSE 再 POST /message。
+ *      （旧稿写的 `agent/assistant-stream` 已证伪：宿主 0.1.2-rc.1 全树无此事件。）
  *   3. 事件用 `Scoped<Agent>` 派发，但根 ctx 上未打 tag 的监听者会收到**所有** agent
  *      的事件 → 必须自己按 agent.id 过滤，否则串台到用户在 Web UI 的会话。
  */
 import {
-  createHash, timingSafeEqual as nodeTimingSafeEqual,
+  createHash, randomInt, timingSafeEqual as nodeTimingSafeEqual,
 } from 'node:crypto'
 import Schema from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -33,7 +34,7 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   BRIDGE_VERSION, ROUTES, ERROR_CODE, ERROR_STATUS, POLICY,
-  APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
+  APPROVAL_CODE_LENGTH, APPROVAL_OUTCOME, APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
 } from './contract.js'
 import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
 import { loadState, resolveStatePath, saveState } from './state.js'
@@ -130,6 +131,9 @@ export function apply(ctx, config) {
      */
     const idempotency = new Map()
 
+    /** 所有活着的 SSE 连接（模块级：卸载收尾要能同步遍历到）。 */
+    const sseConnections = new Set()
+
     /** 取（必要时新建）某对话的网桥实例；dshSessionId 优先取 state.json 里的既有映射。 */
     function bridgeOf(conversation) {
       let bridge = bridges.get(conversation)
@@ -151,6 +155,8 @@ export function apply(ctx, config) {
           buffer: [],
           seq: 0,
           approvals: new Map(),
+          turn: 0,
+          toolCalls: new Map(),
         }
         bridges.set(conversation, bridge)
       }
@@ -209,13 +215,50 @@ export function apply(ctx, config) {
       bridge.buffer.push(envelope)
       broadcast(bridge, envelope)
     }
+    /**
+     * 写一帧 SSE（`id` / `event` / `data`，以空行结尾；契约 §3.2）。
+     * ephemeral 帧没有 seq，就不写 id：客户端据此知道它不参与续传。
+     */
+    function sseWrite(connection, envelope) {
+      if (connection.closed) return
+      const id = envelope.seq === undefined ? '' : `id: ${envelope.seq}\n`
+      const payload = `${id}event: ${envelope.type}\ndata: ${JSON.stringify(envelope)}\n\n`
+      try {
+        connection.response.write(payload)
+      } catch (error) {
+        log?.warn?.(`${tag} SSE 写出失败：${String(error)}`)
+        closeSse(connection, 'write-failed')
+      }
+    }
+
+    /** 关掉一条 SSE 连接。幂等：close 事件会从 request / response 两侧各来一次。 */
+    function closeSse(connection, reason) {
+      if (!connection || connection.closed === true) return
+      connection.closed = true
+      connection.closeReason = reason
+      sseConnections.delete(connection)
+      if (connection.heartbeat) clearInterval(connection.heartbeat)
+      if (connection.subscriber) {
+        try { connection.bridge?.subscribers?.delete(connection.subscriber) } catch { /* 卸载期异常不得逃逸 */ }
+      }
+      try { connection.response.end() } catch { /* 对端可能已经断了 */ }
+    }
+
 
     /**
      * 生成并下发一帧下行事件（带自增 seq 与 ts，契约 §4）。
      * 缓冲溢出时丢最旧的，并追发一帧 `gap` 告知客户端存在空洞（契约 §3.2）。
+     *
+     * `options.ephemeral === true`：只广播、**不占 seq、不入缓冲**。
+     * 心跳与 text/delta 用它：它们没有重放价值，占 seq 会把 Last-Event-ID 语义弄脏。
      */
-    function push(conversation, frame) {
+    function push(conversation, frame, options) {
       const bridge = bridgeOf(conversation)
+      if (options?.ephemeral === true) {
+        const ephemeral = { ts: Date.now(), ...frame }
+        broadcast(bridge, ephemeral)
+        return ephemeral
+      }
       const envelope = { seq: (bridge.seq += 1), ts: Date.now(), ...frame }
       deliver(bridge, envelope)
 
@@ -359,6 +402,9 @@ export function apply(ctx, config) {
     }
 
     ctx.effect(() => () => {
+      // SSE 长连接先同步断干净：disposer 不等 Promise，异步收尾只能挂出去。
+      for (const connection of [...sseConnections]) closeSse(connection, 'unload')
+      sseConnections.clear()
       // Cordis 的 disposer 不等 Promise，所以这里只能挂出去；必须接住 rejection，否则算 unhandled。
       shutdownBridges('卸载收尾').catch((error) => {
         log?.warn?.(`${tag} 卸载收尾异常：${String(error)}`)
@@ -366,49 +412,191 @@ export function apply(ctx, config) {
     }, `${name}: shutdown`)
 
     // ────────────────────────────────────────────────────────────────
-    // agent 事件转发（实现阶段填充）
+    // agent 事件转发 + 审批（P2 已落地）
     // ────────────────────────────────────────────────────────────────
     //
-    // TODO(P2) 流式：瞬时事件，逐 token。
-    //   host.on('agent/assistant-stream', ({ agent, frame }) => {
-    //     const c = runtime.get(byAgentId(agent.id))   // ← 必须过滤，见文件头第 3 条
-    //     if (!c) return
-    //     if (frame.type === 'start') { ... }
-    //     if (frame.type === 'end')   { ... }
-    //     const chunk = frame.chunk
-    //     if (chunk.type === 'text-delta') push(c, { type: EVENT.TEXT_DELTA, text: chunk.text })
-    //     else if (chunk.type === 'reasoning-delta' && config.forwardReasoning) { ... }
-    //     else if (chunk.type === 'tool-call-delta') { ... 聚合后发 tool/call ... }
-    //   })
-    //   注意：`ctx.on(...)` 本身就会注册为 effect 并返回 disposer，
-    //   **不需要**再包一层 ctx.effect。
-    //
-    // TODO(P2) 持久事件：最终文本与 turn 边界。
-    //   const c = runtime.get(bySessionId(session.id))
-    //   host.on('session/event', (session, event) => {
-    //     if (event.type === 'assistant/message') push(c, { type: EVENT.MESSAGE_FINAL, ... })
-    //     else if (event.type === 'turn/end')     push(c, { type: EVENT.TURN_END, ... })
-    //   })
-    //   ⚠️ `message/final` 是唯一权威最终文本；`text/delta` 只用于边跑边显示，
-    //      不得拼接成最终回复（多 step 任务会重复叠加）。
-    //
-    // TODO(P2) 心跳：setInterval 必须包在 ctx.effect 里并返回 clearInterval。
-    //
-    // TODO(P2) 审批 waterfall。
-    //   host.on('approval/request', (request, next) => {
-    //     const c = runtime.get(byAgentId(request.agent.id))
-    //     if (!c || !config.approvalEnabled) return next()   // 不接管就让框架按默认策略处理
-    //     return askApproval(c, request)
-    //   })
-    //   ⚠️ 审批服务自身**零超时**：不自己加超时就会永久堵死该 turn。
-    //      超时 resolve APPROVAL_OUTCOME.REJECTED（fail closed，不是 'cancelled'）。
-    //   ⚠️ request.signal 的 abort → resolve 'cancelled' + clearTimeout + 清 pending 表。
-    //   ⚠️ approval/asked 与 approval/decided 必须包在**已开启的 turn** 内，否则 DSH 抛错。
-    //   范例：dsh-acp/lib/index.js:1115-1138
-    //
-    // TODO(P1) 卸载收尾（顺序正确性见契约 §9 未决 #1）：
-    //   agent.cancel({ kind: 'user' }) → await agent.whenIdle()
-    //   → await sessions.flush(agent.session) → dispose()
+    // 反查辅助：宿主把事件派发到根 ctx 时只给对象身份，**不给** conversation，
+    // 所以必须自己比对回网桥实例（文件头第 3 条：不过滤就串台到 Web UI 的会话）。
+    // 本项目唯一的注册表就是 `bridges`（对象身份 → 对话）。
+
+    /** 按 agent.id 反查网桥。审批 waterfall 只拿得到 Agent，不给 session。 */
+    function bridgeByAgent(agentId) {
+      if (!agentId) return null
+      for (const bridge of bridges.values()) {
+        if (bridge.agent?.id === agentId) return bridge
+      }
+      return null
+    }
+
+    /** 按 agent.session 的**对象身份**反查网桥：不比 id，避免同名会话误伤。 */
+    function bridgeBySession(session) {
+      if (!session) return null
+      for (const bridge of bridges.values()) {
+        if (bridge.agent?.session === session) return bridge
+      }
+      return null
+    }
+
+    /** 穷尽性检查：漏一个变体要在开发期就炸出来，而不是静默丢事件。 */
+    function assertNever(value, context) {
+      throw new Error(`dsh-astrbot-relay: ${context} 出现未覆盖的变体：${JSON.stringify(value)}`)
+    }
+
+    // 单监听器 + 内部 switch：多注册几个监听器只会让「谁先谁后」变成隐式契约。
+    host.on('session/event', (session, event) => {
+      const bridge = bridgeBySession(session)
+      if (!bridge) return
+      const data = event?.data ?? {}
+      switch (event.type) {
+        case 'turn/start': {
+          bridge.turn = data.turn
+          bridge.toolCalls.clear()
+          push(bridge.conversation, { type: EVENT.TURN_START, turn: bridge.turn })
+          return
+        }
+        case 'assistant/chunk': {
+          const chunk = data.chunk
+          switch (chunk?.type) {
+            case 'text-delta':
+              // 只用于「边跑边显示」：最终文本一律以 message/final 为准（契约 §4.1）。
+              push(bridge.conversation, {
+                type: EVENT.TEXT_DELTA, turn: data.turn, step: data.step,
+                index: chunk.index, text: chunk.text,
+              }, { ephemeral: true })
+              return
+            case 'reasoning-delta':
+              if (!config.forwardReasoning) return
+              push(bridge.conversation, {
+                type: EVENT.REASONING_DELTA, turn: data.turn, step: data.step,
+                index: chunk.index, text: chunk.text,
+              }, { ephemeral: true })
+              return
+            case 'tool-call-delta': {
+              // 工具参数是流式拼出来的：按 index 聚合，到 block-end 才发完整帧。
+              const pending = bridge.toolCalls.get(chunk.index) ?? { id: '', name: '', arguments: '' }
+              if (chunk.id) pending.id = chunk.id
+              if (chunk.name) pending.name = chunk.name
+              pending.arguments += chunk.argumentsDelta ?? ''
+              bridge.toolCalls.set(chunk.index, pending)
+              return
+            }
+            case 'block-start':
+              return
+            case 'block-end': {
+              const block = chunk.block
+              if (block?.type !== 'tool-call') return
+              const pending = bridge.toolCalls.get(chunk.index)
+              const call = {
+                callId: block.id ?? pending?.id ?? '',
+                name: block.name ?? pending?.name ?? '',
+                arguments: block.arguments ?? pending?.arguments ?? '',
+              }
+              bridge.toolCalls.delete(chunk.index)
+              push(bridge.conversation, {
+                type: EVENT.TOOL_CALL, turn: data.turn, step: data.step, ...call,
+              })
+              return
+            }
+            case 'usage':
+            case 'finish':
+              // 用量与结束原因不单独下行：正文看 message/final，收尾看 turn/end。
+              return
+            default:
+              assertNever(chunk, 'assistant/chunk')
+          }
+          return
+        }
+        case 'assistant/message': {
+          const content = data.message?.content ?? []
+          const text = content
+            .filter((block) => block.type === 'text')
+            .map((block) => block.text)
+            .join('')
+          push(bridge.conversation, {
+            type: EVENT.MESSAGE_FINAL, turn: data.turn, step: data.step,
+            text, interrupted: data.message?.interrupted === true,
+          })
+          return
+        }
+        case 'turn/end': {
+          push(bridge.conversation, {
+            type: EVENT.TURN_END, turn: data.turn, reason: data.reason,
+          })
+          bridge.turn = 0
+          return
+        }
+        default:
+          // session/event 是 append-only 火管：user/message、tool/result 等都会到这里。
+          // 不属于下行契约的一律忽略——**不要** assertNever，那会把正常事件当 bug 抛。
+          return
+      }
+    })
+
+    // 心跳：必须包在 ctx.effect 里并返回 clearInterval，否则定时器会拖住进程退出。
+    ctx.effect(() => {
+      const timer = setInterval(() => {
+        for (const bridge of bridges.values()) {
+          push(bridge.conversation, { type: EVENT.HEARTBEAT }, { ephemeral: true })
+        }
+      }, Math.max(1000, Math.trunc(config.heartbeatMs)))
+      timer.unref?.()
+      return () => clearInterval(timer)
+    }, `${name}: heartbeat`)
+
+    /** 审批验证码字母表：去掉 I/O/0/1，人工抄码时不容易认错。 */
+    const APPROVAL_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+    /** 生成 APPROVAL_CODE_LENGTH 位验证码。它只是「人确认」的凭据，不参与安全判定。 */
+    function randomApprovalCode() {
+      let code = ''
+      for (let i = 0; i < APPROVAL_CODE_LENGTH; i += 1) {
+        code += APPROVAL_CODE_ALPHABET[randomInt(APPROVAL_CODE_ALPHABET.length)]
+      }
+      return code
+    }
+
+    /**
+     * 向 IM 用户要一次审批，resolve 出 ApprovalOutcome（契约 §7）。
+     *
+     * ⚠️ 审批服务自身**零超时**：不自己加超时就会永久堵死该 turn，
+     *    所以这里必须 setTimeout + unref，且超时 resolve REJECTED（fail closed，不是 cancelled）。
+     * ⚠️ `finish` 只能生效一次：超时、signal abort、IM 回执三条路可能同时到达。
+     * ⚠️ approval/asked 与 approval/decided 由审批服务自己记审计，本端不代发。
+     */
+    function askApproval(bridge, request) {
+      const callId = request.callId ?? `im-call-${Date.now()}-${randomInt(1_000_000)}`
+      const expiresAt = Date.now() + Math.max(1000, Math.trunc(config.approvalTimeoutMs))
+      const code = randomApprovalCode()
+      return new Promise((resolve) => {
+        let timer = null
+        const finish = (outcome, via) => {
+          if (!bridge.approvals.has(callId)) return   // 超时路径已删表：不重复结算
+          bridge.approvals.delete(callId)
+          if (timer) clearTimeout(timer)
+          push(bridge.conversation, {
+            type: EVENT.APPROVAL_RESOLVED, callId, outcome, via,
+          })
+          resolve(outcome)
+        }
+        timer = setTimeout(() => finish(APPROVAL_OUTCOME.REJECTED, 'timeout'), expiresAt - Date.now())
+        timer.unref?.()
+        bridge.approvals.set(callId, { code, expiresAt, settle: finish })
+        push(bridge.conversation, {
+          type: EVENT.APPROVAL_REQUIRED, callId,
+          toolName: request.toolName ?? '', reason: request.reason ?? '',
+          code, expiresAt,
+        })
+        // turn 被取消 → 必须把它结算掉，否则这个审批会挂到进程结束。
+        request.signal?.addEventListener?.('abort', () => finish('cancelled', 'abort'), { once: true })
+      })
+    }
+
+    host.on('approval/request', (request, next) => {
+      const bridge = bridgeByAgent(request?.agent?.id)
+      // 不接管就让框架按默认策略处理（next 的返回值必须原样透出）。
+      if (!bridge || !config.approvalEnabled) return next()
+      return askApproval(bridge, request)
+    })
 
     // ────────────────────────────────────────────────────────────────
     // 路由实现
@@ -626,33 +814,104 @@ export function apply(ctx, config) {
       }
     }
 
-    /** GET /events — TODO(P2)。 */
+    /** GET /events — SSE 下行通道（契约 §3.2 / §4.1）。 */
     function handleEvents(request, response) {
       if (!authorize(request, response, config)) return
-      // TODO(P2) SSE 写法照抄 dsh-client-hmr/lib/index.js:114-158：
-      //   response.writeHead(200, {
-      //     'content-type': 'text/event-stream',
-      //     'cache-control': 'no-cache',
-      //     connection: 'keep-alive',
-      //   })
-      //   response.write(': connected\n\n')
-      //   ... 按 Last-Event-ID 从环形缓冲重放 ...
-      //   response.on('close', cleanup)
-      // 501 not_implemented：本端**没做**这件事，与 400 unsupported
-      // （请求本身不合法）是两回事——IM 侧据此决定「等升级」还是「改请求」。
-      writeError(response, ERROR_CODE.NOT_IMPLEMENTED,
-        'GET /events 尚未实现（P2）。骨架不假装成功。')
+      const conversation = queryOf(request).searchParams.get('conversation')
+      if (!conversation) {
+        writeError(response, ERROR_CODE.UNSUPPORTED,
+          '缺少 conversation 查询参数（IM 会话键，形如 default:GroupMessage:1000000001）')
+        return
+      }
+      // 契约 §4.1 规定 IM 侧顺序固定为「先连 SSE → 再 POST /message」，
+      // 所以首次通话时这里必然还没有映射：必须用 bridgeOf 按需建桥，
+      // 否则 /events 先回 404，IM 侧一旦把 404 视为永久失败就死锁（首帧永远到不了）。
+      // 只建内存桥、不落盘映射，dshSessionId 由 handleMessage 在第 722-743 行分配。
+      const bridge = bridgeOf(conversation)
+      response.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        // 反代默认会缓冲响应体，SSE 就退化成「一次全吐出来」，必须显式关掉。
+        'x-accel-buffering': 'no',
+      })
+      response.write(': connected\n\n')
+
+      const connection = { bridge, response, heartbeat: null, closed: false, subscriber: null }
+      // 先补历史、**再**登记订阅者：反过来会漏掉重放期间新产生的事件。
+      const from = Number.parseInt(headerOf(request, 'last-event-id'), 10)
+      if (Number.isFinite(from)) {
+        for (const envelope of [...bridge.buffer]) {
+          if (envelope.seq > from) sseWrite(connection, envelope)
+        }
+      }
+      connection.subscriber = (envelope) => sseWrite(connection, envelope)
+      bridge.subscribers.add(connection.subscriber)
+      sseConnections.add(connection)
+
+      // 心跳走 ephemeral：不占 seq、不入缓冲，只用来让中间设备别掐连接。
+      connection.heartbeat = setInterval(() => {
+        if (connection.closed) return
+        try {
+          response.write(`event: ${EVENT.HEARTBEAT}\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`)
+        } catch {
+          closeSse(connection, 'heartbeat-failed')
+        }
+      }, Math.max(1000, Math.trunc(config.heartbeatMs)))
+      connection.heartbeat.unref?.()
+
+      request.on('close', () => closeSse(connection, 'request-close'))
+      request.on('error', () => closeSse(connection, 'request-error'))
+      response.on('close', () => closeSse(connection, 'response-close'))
     }
 
-    /** POST /approval — TODO(P2)。 */
-    function handleApproval(request, response) {
+    /** POST /approval — IM 回执审批（契约 §3.3）。 */
+    async function handleApproval(request, response) {
       if (!authorize(request, response, config)) return
-      // TODO(P2) 校验：code 一次性 + conversation 匹配 + 未过期 + 未决议
-      //   + outcome ∈ APPROVAL_OUTCOME_ALLOWED
-      //   已决议/已超时 → 409（幂等冲突，不算错误）
-      void APPROVAL_OUTCOME_ALLOWED
-      writeError(response, ERROR_CODE.NOT_IMPLEMENTED,
-        'POST /approval 尚未实现（P2）。骨架不假装成功。')
+      const body = await readJsonBody(request)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+      const fields = ['conversation', 'callId', 'outcome', 'code']
+      for (const field of fields) {
+        const value = body[field]
+        if (typeof value !== 'string' || value.trim() === '') {
+          writeError(response, ERROR_CODE.UNSUPPORTED, `字段 ${field} 必须是非空字符串`)
+          return
+        }
+      }
+      const { conversation, callId, outcome, code } = body
+      if (!APPROVAL_OUTCOME_ALLOWED.includes(outcome)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED,
+          `outcome 只能是 ${APPROVAL_OUTCOME_ALLOWED.join(' / ')}`)
+        return
+      }
+      const bridge = bridges.get(conversation)
+      if (!bridge) {
+        writeError(response, ERROR_CODE.NOT_FOUND, `未知对话 ${conversation}`)
+        return
+      }
+      const pending = bridge.approvals.get(callId)
+      if (!pending) {
+        // 契约 §3.3：已决议 / 已超时都归为「幂等冲突」，用 409 表达，不算错误。
+        // 本端 ERROR_STATUS 里 409 只有 agent_busy 一个码，故复用之。
+        writeError(response, ERROR_CODE.AGENT_BUSY, `该审批已决议或已超时：${callId}`)
+        return
+      }
+      if (Date.now() > pending.expiresAt) {
+        bridge.approvals.delete(callId)
+        pending.settle(APPROVAL_OUTCOME.REJECTED, 'timeout')
+        writeError(response, ERROR_CODE.AGENT_BUSY, '该审批已超时')
+        return
+      }
+      if (pending.code !== code.trim().toUpperCase()) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '验证码不正确')
+        return
+      }
+      bridge.approvals.delete(callId)
+      pending.settle(outcome, 'im')
+      writeJson(response, 200, { ok: true })
     }
 
     /**
