@@ -1189,6 +1189,40 @@ def _hard_split(block: str, size: int) -> list[str]:
     return out
 
 
+def _split_fence_unit(block: str, size: int) -> list[str]:
+    """超长代码围栏：逐行重排，每片自带闭合与重开的围栏标记。
+
+    这是 ``_split_for_im`` 的退化路径：围栏本身装不进单条上限时，"不切开"
+    已经做不到，退而求其次——**让每一片都是合法且自洽的代码块**，而不是把
+    一片渲染成没有收尾的围栏、另一片渲染成孤立的反引号。收尾/重开标记占用
+    的额度先从上限里扣掉，因此返回的每一片仍不超过 ``size``。
+
+    唯一的内容代价：某片的切点若落在代码行中间，会补一个换行让收尾标记独占
+    一行——代码文本因此可能多出一个换行，但少这一个换行就无法闭合渲染。
+    """
+    lines = block.splitlines(keepends=True)
+    if not lines:
+        return [block]
+    open_line = lines[0]
+    marker = _fence_marker(open_line)
+    body = lines[1:]
+    close_line = marker + "\n"
+    if body and _is_fence_close(body[-1], marker):
+        close_line = body[-1]
+        body = body[:-1]
+    # 预留 1 字节：切点可能落在行中间，此时收尾标记必须独占一行，
+    # 否则 "xxxx```" 会与代码同行，渲染不出闭合效果。
+    budget = size - len(open_line) - len(close_line) - 1
+    if budget < 1:
+        return _hard_split(block, size)  # 标记本身就超限：只能硬切
+    pieces = []
+    for piece in _hard_split("".join(body), budget):
+        if piece and not piece.endswith("\n"):
+            piece += "\n"
+        pieces.append(open_line + piece + close_line)
+    return pieces or [block]
+
+
 def _split_for_im(text: str, size: int) -> list[str]:
     """按段落 / 代码围栏边界切分长文本。
 
@@ -1197,7 +1231,8 @@ def _split_for_im(text: str, size: int) -> list[str]:
 
     贪心装箱：整段代码围栏视为不可拆单元，普通内容按行累积，装不下才开新块，
     于是断点落在段落 / 列表项边界，反引号围栏也不会被从中间切开。仅当单元
-    自身超过 ``size``（超长代码块或超长单行）才退化到逐行装箱 / 硬切。
+    自身超过 ``size``（超长代码块或超长单行）才退化：代码块走
+    ``_split_fence_unit``（补齐围栏），其余按行装箱 / 硬切。
     """
     if not text:
         return []
@@ -1211,7 +1246,11 @@ def _split_for_im(text: str, size: int) -> list[str]:
             if buf:
                 chunks.append(buf)
                 buf = ""
-            chunks.extend(_hard_split(unit, size))
+            head = unit.splitlines()[0] if unit.splitlines() else ""
+            if _fence_marker(head):
+                chunks.extend(_split_fence_unit(unit, size))
+            else:
+                chunks.extend(_hard_split(unit, size))
             continue
         if buf and len(buf) + len(unit) > size:
             chunks.append(buf)
