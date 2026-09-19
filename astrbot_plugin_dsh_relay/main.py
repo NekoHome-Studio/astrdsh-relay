@@ -1,13 +1,14 @@
 """AstrDsh Relay（星驿）· AstrBot 侧 IM ↔ DSH 网桥。
 
-实现状态（P1/P2 已落地，P4 仍是占位）：
+实现状态（P1/P2 已落地，P4 仅剩 card 模式）：
   * ``BridgeTransport``：``/health``（版本协商）、``/where``、``/message``
     （幂等 + 重试 + 同会话串行）、``/events``（aiohttp 手读 SSE，Last-Event-ID
     续传，heartbeat/gap 处理）、``/approval`` 全部实现。
   * ``Main``：先连 SSE 再投递的闭环、``code → callId`` 反查、
     ``text/delta`` 节流回帖、审批事件转达、主动推送 ``push_to_session``。
+  * ``chunk_size`` 的语义化切分已落地（段落 / 代码围栏感知，见 ``_split_for_im``）。
   * 仍欠：``health_interval_ms`` 的周期健康检查（现仅启动时校验一次）、
-    ``reply_render_mode="card"`` 的 t2i 卡片、``chunk_size`` 的语义化切分。
+    ``reply_render_mode="card"`` 的 t2i 卡片。
 
 契约真相来源：``docs/BRIDGE-CONTRACT.md``
 设计依据：      ``docs/DESIGN.md`` §3
@@ -725,6 +726,12 @@ class Main(Star):
         stream_ok = bool(self._cfg("stream_enabled", True))
         throttle = max(0.0, float(self._cfg("throttle_ms", 2500) or 0) / 1000.0)
         flush_chars = max(1, int(self._cfg("flush_chars", 200) or 1))
+        # ``flush_hard_chars``：软阈值（flush_chars）之上找不到句子边界时，
+        # 最多再容忍到这一长度才硬切。默认 3 倍软阈值、且不低于 600 字符。
+        hard_chars = max(
+            flush_chars,
+            int(self._cfg("flush_hard_chars", 0) or 0) or max(flush_chars * 3, 600),
+        )
         total = float(self._cfg("request_timeout", 600) or 600)
         deadline = time.monotonic() + max(30.0, total)
 
@@ -775,10 +782,14 @@ class Main(Star):
             if kind == contract.EVENT_TEXT_DELTA:
                 pending += str(item.get("text") or "")
                 if stream_ok and due():
-                    emitted += pending
-                    await event.send(event.plain_result(pending))
-                    pending = ""
-                    last_flush = time.monotonic()
+                    cut = _pick_cut(pending, flush_chars, hard_chars)
+                    if cut:
+                        # 只发到句子边界，剩余部分留在 pending 里继续攒，
+                        # 既不在句中断开，也不会破坏未闭合的代码围栏。
+                        emitted += pending[:cut]
+                        await event.send(event.plain_result(pending[:cut].rstrip("\n")))
+                        pending = pending[cut:]
+                        last_flush = time.monotonic()
                 continue
 
             if kind == contract.EVENT_REASONING_DELTA:
@@ -1057,17 +1068,144 @@ def _is_private_chat(event: AstrMessageEvent) -> bool:
     return len(parts) >= 2 and parts[1] == "FriendMessage"
 
 
+def _fence_marker(line: str) -> str:
+    """行首若是 ``` / ~~~ 围栏标记，返回该标记串；否则返回空串。"""
+    stripped = line.lstrip(" 	")
+    ch = stripped[:1]
+    if ch not in ("`", "~"):
+        return ""
+    run = len(stripped) - len(stripped.lstrip(ch))
+    return stripped[:run] if run >= 3 else ""
+
+
+def _is_fence_close(line: str, marker: str) -> bool:
+    """该行是否可以作为 ``marker`` 的收尾行（除标记与空白外没有别的字符）。"""
+    stripped = line.rstrip("\r\n").lstrip(" 	")
+    if len(stripped) < len(marker):
+        return False
+    return not stripped.strip(marker[0] + " 	")
+
+
+_SENTENCE_ENDS = "\n。！？；!?;…"
+
+
+def _fence_open_before(text: str, index: int) -> bool:
+    """``text[:index]`` 是否停在未闭合的代码围栏内部。"""
+    marker = ""
+    for line in text[:index].splitlines():
+        found = _fence_marker(line)
+        if not found:
+            continue
+        if not marker:
+            marker = found[0]
+        elif found[0] == marker:
+            marker = ""
+    return bool(marker)
+
+
+def _pick_cut(pending: str, soft: int, hard: int) -> int:
+    """在 ``pending`` 里挑一个可发送的切点，返回下标（0 表示还不该发）。
+
+    规则：优先切在句末标点 / 换行之后，并且切点不能落在未闭合的代码围栏内部；
+    一直攒到 ``hard`` 仍找不到边界时才硬切。这样流式回帖不会从句子中间劈开。
+    """
+    soft = max(1, int(soft or 1))
+    hard = max(soft, int(hard or soft))
+    limit = len(pending)
+
+    cursor = limit
+    for _ in range(16):  # 最多回退 16 个候选边界，避免病态长文本反复扫描
+        end = max((pending.rfind(ch, 0, cursor) for ch in _SENTENCE_ENDS), default=-1) + 1
+        if end < soft:
+            break
+        if not _fence_open_before(pending, end):
+            return end
+        cursor = end - 1
+
+    if limit >= hard:
+        cursor = limit
+        for _ in range(16):
+            line_end = pending.rfind("\n", 0, cursor) + 1
+            if line_end < soft:
+                break
+            if not _fence_open_before(pending, line_end):
+                return line_end
+            cursor = line_end - 1
+        return limit  # 实在没有边界：硬切，保证流式不被卡死
+    return 0
+
+
+def _iter_units(text: str) -> list[str]:
+    """切成不可再分的最小单元：整段代码围栏算一个单元，其余按行。"""
+    lines = text.splitlines(keepends=True)
+    units: list[str] = []
+    i = 0
+    while i < len(lines):
+        marker = _fence_marker(lines[i])
+        if not marker:
+            units.append(lines[i])
+            i += 1
+            continue
+        block = [lines[i]]
+        i += 1
+        while i < len(lines):
+            block.append(lines[i])
+            closing = _is_fence_close(lines[i], marker)
+            i += 1
+            if closing:
+                break
+        units.append("".join(block))
+    return units
+
+
+def _hard_split(block: str, size: int) -> list[str]:
+    """单元自身就超过 ``size``：先按行装箱，单行仍超长才硬切。"""
+    out: list[str] = []
+    cur = ""
+    for piece in block.splitlines(keepends=True):
+        while len(piece) > size:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(piece[:size])
+            piece = piece[size:]
+        if cur and len(cur) + len(piece) > size:
+            out.append(cur)
+            cur = ""
+        cur += piece
+    if cur:
+        out.append(cur)
+    return out
+
+
 def _split_for_im(text: str, size: int) -> list[str]:
-    """占位切分：按字符硬切。
+    """按段落 / 代码围栏边界切分长文本。
 
     已核实：AstrBot **没有**通用切分工具，且 aiocqhttp 适配器完全没有长度切分
     逻辑，所以必须自己切。
 
-    TODO(P4)：改为按段落 / 代码围栏边界切分，并保留围栏完整性
-    （既有 connector 的 ``core/reply_render.py`` 可作参考）。
+    贪心装箱：整段代码围栏视为不可拆单元，普通内容按行累积，装不下才开新块，
+    于是断点落在段落 / 列表项边界，反引号围栏也不会被从中间切开。仅当单元
+    自身超过 ``size``（超长代码块或超长单行）才退化到逐行装箱 / 硬切。
     """
     if not text:
         return []
-    if not size or size <= 0 or len(text) <= size:
+    size = int(size or 0)
+    if size <= 0 or len(text) <= size:
         return [text]
-    return [text[i : i + size] for i in range(0, len(text), size)]
+    chunks: list[str] = []
+    buf = ""
+    for unit in _iter_units(text):
+        if len(unit) > size:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            chunks.extend(_hard_split(unit, size))
+            continue
+        if buf and len(buf) + len(unit) > size:
+            chunks.append(buf)
+            buf = ""
+        buf += unit
+    if buf:
+        chunks.append(buf)
+    return chunks

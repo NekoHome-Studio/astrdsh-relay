@@ -25,7 +25,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 插件契约（`metadata.yaml` / `_conf_schema.json` / `Star` 子类） | ✅ 就位 |
 | 前缀触发 + 白名单 + 私聊过滤 | ✅ 就位 |
 | **易错顺序**（`should_call_llm(True)`、`stop_event()` 在 `yield` 之后） | ✅ 已按源码事实固化 |
-| 切分回帖结构（中间分片 `event.send()` / 最后一片 `yield`） | ✅ 结构就位（切分算法是占位） |
+| 切分回帖结构（中间分片 `event.send()` / 最后一片 `yield`） | ✅ 已落地（段落 / 代码围栏感知切分） |
 | 审批命令分支（`/dsh approve|reject <code>`） | ✅ 结构就位 |
 | 契约常量（`contract.py`） | ✅ 就位 |
 | `/dsh where` 定位命令 + 本地信息（会话键/桥接地址） | ✅ 就位 |

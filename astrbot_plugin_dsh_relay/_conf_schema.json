@@ -75,7 +75,14 @@
   "flush_chars": {
     "description": "流式合流字符阈值",
     "type": "int",
-    "default": 200
+    "default": 200,
+    "hint": "达到该长度且已找到句末标点/换行才会发一条；不会从句子中间劈开"
+  },
+  "flush_hard_chars": {
+    "description": "流式硬切上限（0=自动取 3 倍 flush_chars 且不低于 600）",
+    "type": "int",
+    "default": 0,
+    "hint": "一直找不到任何句末边界时，攒到该长度才强行切分，避免长段落迟迟不发"
   },
   "chunk_size": {
     "description": "单条消息最大字符数（0=不切分）",
