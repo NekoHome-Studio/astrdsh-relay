@@ -53,7 +53,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 或本地 `node scripts/package-release.mjs` 打到 `dist/`），或在克隆里指向本目录：
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.6.0.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.6.1.tgz
 dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 ```
 
