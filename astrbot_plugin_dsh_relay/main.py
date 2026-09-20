@@ -1,6 +1,6 @@
 """AstrDsh Relay（星驿）· AstrBot 侧 IM ↔ DSH 网桥。
 
-实现状态（P1/P2 已落地，P4 仅剩 card 模式）：
+实现状态（P1/P2/P4 均已落地，P4 含 card 模式）：
   * ``BridgeTransport``：``/health``（版本协商）、``/where``、``/workspaces``
     （列出桥接端工作区）、``/session/rebind``（把对话改指到指定工作区）、
     ``/message``（幂等 + 重试 + 同会话串行）、``/events``（aiohttp 手读 SSE，
@@ -8,8 +8,12 @@
   * ``Main``：先连 SSE 再投递的闭环、``code → callId`` 反查、
     ``text/delta`` 节流回帖、审批事件转达、主动推送 ``push_to_session``。
   * ``chunk_size`` 的语义化切分已落地（段落 / 代码围栏感知，见 ``_split_for_im``）。
-  * 仍欠：``health_interval_ms`` 的周期健康检查（现仅启动时校验一次）、
-    ``reply_render_mode="card"`` 的 t2i 卡片。
+  * ``health_interval_ms`` 周期健康检查已落地（0=关，仅启动时探测）；连续失败
+    会把桥接标记为「未就绪」，用户侧直接看到原因而不是干等超时。
+  * ``reply_render_mode="card"`` 已落地：复用 AstrBot 自带
+    ``Star.text_to_image`` 出图（沿用当前 t2i 模板与端点），
+    **渲染失败或超时即整条降级纯文本**并告警 —— t2i 是外部服务，
+    不能让回帖整条丢失。
 
 契约真相来源：``docs/BRIDGE-CONTRACT.md``
 设计依据：      ``docs/DESIGN.md`` §3
@@ -154,6 +158,9 @@ class BridgeTransport:
         self._session: aiohttp.ClientSession | None = None
         self._connector: aiohttp.TCPConnector | None = None
         self._locks: dict[str, asyncio.Lock] = {}
+        #: 周期健康检查的后台任务；``terminate`` 必须 cancel 掉它，
+        #: 否则就是本插件唯一一处「游离任务」。
+        self._health_task: asyncio.Task[None] | None = None
         self._signals: dict[str, asyncio.Event] = {}
         self._last_seq: dict[str, int] = {}
 
@@ -692,8 +699,8 @@ class Main(Star):
     async def initialize(self) -> None:
         """启动探测：/health + 版本协商。不匹配就拒绝启用，不做猜测性降级。
 
-        周期健康检查（``health_interval_ms``）留待后续；这里只做一次启动校验，
-        因为「版本不对」是最需要立刻停止使用桥接的情形。
+        探测成功后再按 ``health_interval_ms`` 起周期复检（0 = 只做这一次）：
+        桥接端重启、被防火墙掐断、版本被换掉，都不该等到用户发消息才发现。
         """
         if not self._cfg("enable", True):
             logger.info("[dsh_relay] 未启用（配置 enable=false）")
@@ -718,6 +725,42 @@ class Main(Star):
             f"[dsh_relay] 桥接就绪：bridgeVersion={info.get('bridgeVersion')} "
             f"pathPrefix={info.get('pathPrefix')} conversations={info.get('conversations')}"
         )
+        self._health_task = asyncio.create_task(
+            self._health_loop(), name="dsh_relay.health"
+        )
+
+    async def _health_loop(self) -> None:
+        """按 ``health_interval_ms`` 周期调 ``/health``（内含版本协商）。
+
+        与 ``_handle_task`` 同样的口径：失败不抛出、不重试，
+        只把 ``_bridge_ok`` 置回 False 并把原因写进 ``_bridge_error``，
+        让下一条用户消息「立刻带上原因」，而不是干等 request_timeout。
+        恢复成功则自动回到就绪 —— 健康检查是状态机，不是单向熔断。
+        """
+        interval_ms = int(self._cfg("health_interval_ms", 30000) or 0)
+        if interval_ms <= 0:
+            logger.info("[dsh_relay] 周期健康检查已关闭（health_interval_ms<=0）")
+            return
+        interval = max(interval_ms, 1000) / 1000.0
+        transport = self._transport_or_create()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                info = await transport.health()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 复检失败只影响就绪标记
+                if self._bridge_ok is not False:
+                    logger.warning(f"[dsh_relay] 健康复检失败：{exc}")
+                self._bridge_ok = False
+                self._bridge_error = str(exc)
+                continue
+            if self._bridge_ok is not True:
+                logger.info(
+                    f"[dsh_relay] 桥接已恢复：bridgeVersion={info.get('bridgeVersion')}"
+                )
+            self._bridge_ok = True
+            self._bridge_error = None
 
     # ---- 配置读取 ----------------------------------------------------
 
@@ -1312,15 +1355,55 @@ class Main(Star):
 
         切分策略（契约 §9 未决 #5、设计 §3 第 5 层）：
           中间分片 ``await event.send()``；最后一片 ``yield plain_result()``。
+
+        渲染策略：
+          ``reply_render_mode="text"``（默认）逐片纯文本；
+          ``="card"`` 先逐片出图，成功则整条走图片，
+          **任一片失败就整条退回纯文本**（绝不半图半文）。
         """
         chunk_size = int(self._cfg("chunk_size", 800) or 0)
         chunks = _split_for_im(text, chunk_size)
         if not chunks:
             yield event.plain_result("（DSH 没有返回内容）")
             return
+        if str(self._cfg("reply_render_mode", "text") or "text").strip().lower() == "card":
+            cards = await self._render_cards(event, chunks)
+            if cards is not None:
+                for card in cards[:-1]:
+                    await event.send(card)
+                yield cards[-1]
+                return
         for chunk in chunks[:-1]:
             await event.send(event.plain_result(chunk))
         yield event.plain_result(chunks[-1])
+
+    async def _render_cards(
+        self, event: AstrMessageEvent, chunks: list[str]
+    ) -> list[Any] | None:
+        """把每一片都渲染成卡片图；**有一片失败就整条放弃**（返回 None）。
+
+        复用 ``Star.text_to_image``（沿当前 t2i 模板与端点），不自建渲染：
+        t2i 是外部服务，可能超时、可能模板取不到，所以这里只负责
+        「要么全成，要么交还给 ``_reply`` 走纯文本」——
+        半截图片 + 半截文字会比纯文本更糟糕。
+        """
+        total = len(chunks)
+        cards: list[Any] = []
+        for index, chunk in enumerate(chunks, 1):
+            try:
+                url = await self.text_to_image(chunk, return_url=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"[dsh_relay] card 渲染失败（第 {index}/{total} 片）：{exc}；整条降级纯文本"
+                )
+                return None
+            if not url:
+                logger.warning(
+                    f"[dsh_relay] card 渲染返回空 URL（第 {index}/{total} 片）；整条降级纯文本"
+                )
+                return None
+            cards.append(event.image_result(url))
+        return cards
 
     # ---- 辅助 --------------------------------------------------------
 
@@ -1380,12 +1463,24 @@ class Main(Star):
         return sent
 
     async def terminate(self) -> None:
-        """插件卸载：释放连接池。
+        """插件卸载：停掉后台任务，再释放连接池。
 
-        本插件的后台协程（SSE 读取任务）都由 ``_handle_task`` 在同一次调用里
-        创建并在 ``finally`` 里 cancel + await，没有游离的任务；
-        因此这里只需关闭连接池与清空待审批表，不必依赖 AstrBot 代劳。
+        本插件有**两处**后台协程，都必须在这里收干净：
+          * SSE 读取任务：由 ``_handle_task`` 在同一次调用里创建，
+            并在 ``finally`` 里 cancel + await，随事件生命周期自灭；
+          * 周期健康检查：``initialize`` 里起的常驻任务，**必须显式 cancel**。
+            它是全插件唯一的游离任务，漏掉就会在重载插件后继续跑，
+            拿着已关闭的连接池去打 /health（历史上那句「没有游离的任务」
+            的承诺到此为止，别再照抄）。
         """
+        if self._health_task is not None:
+            task, self._health_task = self._health_task, None
+            task.cancel()
+            # 用 wait 而不是 await task：await 会把子任务的取消
+            # 与外层自己的取消混在一条链路里，容易把别人对插件的取消一起吞掉；
+            # wait 只负责等它真的停下来。
+            with contextlib.suppress(Exception):
+                await asyncio.wait({task})
         self._pending.clear()
         if self._transport is not None:
             await self._transport.aclose()

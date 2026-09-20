@@ -70,9 +70,9 @@ export const inject = ['webServer', 'agents', 'sessions', 'agentDefaultModel', '
 /**
  * 配置 schema。
  *
- * 【未核实】`@deepseek-ai/schemastery` 作为第三方插件依赖是否可解析——
- * P1 必须先实测；官方向导明确要求导出 Standard Schema 而非普通对象，
- * 因此这里不提供「退化成普通对象」的兜底。
+ * 已核实：`@deepseek-ai/schemastery` 作为第三方插件依赖可正常解析
+ * （本机 profile 已挂载本插件并生效，不再是推断）；官方向导要求导出
+ * Standard Schema 而非普通对象，因此这里不提供「退化成普通对象」的兜底。
  *
  * 设计原则：凡不同部署可能取不同值的参数都不许硬编码；非法配置在**加载时**失败。
  */
