@@ -481,7 +481,7 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
 > 认出「哪条来自哪个群」。
 >
 > 本节的读路径**不依赖任何未核实的 DSH API**，因此已经是可用的实现；
-> 「标题的应用」也已在 v0.7.0 落地（见 §12.4），只剩「对话级覆盖的写入」留给 P5。
+> 「标题的应用」也已在 v0.7.1 落地（见 §12.4），只剩「对话级覆盖的写入」留给 P5。
 
 ### 12.1 `GET /where?conversation=<umo>`
 
@@ -551,7 +551,7 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
 
 - **未知占位符原样保留**（不替换成空串），让配置写错看得见，而不是静默产出空标题。
 - 标题为空等于定位失效，因此配置校验把「空模板 / 渲染结果为空」当**加载期错误**。
-- 标题的**应用**：**已落地**（v0.7.0）。宿主有 `session-title` 服务，请求期
+- 标题的**应用**：**已落地**（v0.7.1）。宿主有 `session-title` 服务，请求期
   `host.get` 取不到时回落 `ctx.get`（`lib/session-title.js` 的 `titlesOf`）；
   写入点三处——`/message` 的建会话与复用分支、`/session/rebind` 改指之后，
   两者都在 `followup` **之前**写，另加 `fork` 路径**显式不写**。
