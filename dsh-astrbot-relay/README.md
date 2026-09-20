@@ -9,8 +9,8 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**P1 + P2 已落地，是可运行实现。** 九个端点全部有真实 handler；仅三项配置项未实现，
-命中时 `assertConfigIsUsable` **加载即抛错**，不静默降级。
+**P1 + P2 已落地，是可运行实现。** 九个端点全部有真实 handler；契约预留的三项配置
+（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`）也均已接线。
 
 | 部位 | 状态 |
 |---|---|
@@ -29,7 +29,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `POST /session/rebind`（改指到指定工作区，契约 §13.2） | ✅ 就位（建新会话 + 换映射，旧会话保留） |
 | 幂等（有界 LRU + TTL）、卸载期 `cancel → whenIdle → flush → dispose` 收尾 | ✅ 就位 |
 | 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
-| `hmacMode`、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` | ⛔ 未实现（**加载即失败**） |
+| `hmacMode`（HMAC 签名）、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` 空闲回收 | ✅ 就位（轮转与回收只归档不删历史） |
 
 ## 用户看到的指令在 AstrBot 侧
 
@@ -53,7 +53,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 或本地 `node scripts/package-release.mjs` 打到 `dist/`），或在克隆里指向本目录：
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.6.1.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.6.2.tgz
 dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 ```
 

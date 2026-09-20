@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import random
 import ssl
@@ -203,14 +205,41 @@ class BridgeTransport:
             return ssl.create_default_context(cafile=path)
         return None
 
-    def _headers(self, *, json_body: bool = False) -> dict[str, str]:
+    def _headers(
+        self, *, json_body: bool = False, body_bytes: bytes | None = None
+    ) -> dict[str, str]:
         headers = {"Accept": "application/json"}
         token = str(self._config.get("bridge_token") or "")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if json_body:
             headers["Content-Type"] = "application/json"
+        if body_bytes is not None:
+            headers.update(self._signature_headers(token, body_bytes))
         return headers
+
+    def _signature_headers(self, token: str, body_bytes: bytes) -> dict[str, str]:
+        """契约 §5.2 的可选强化：对**实际发送的原始字节**做 HMAC-SHA256。
+
+        签名对象是 ``ts + "." + rawBody``（UTF-8），``ts`` 为毫秒时间戳字符串，
+        与 DSH 侧 ``verifySignature`` 逐字节一致。所以这里收的是已经编码好的
+        ``body_bytes``，不是 dict——重新序列化一次就会因键序/空白而对不上。
+        """
+        if not self._config.get("hmac_mode", False):
+            return {}
+        if not token:
+            raise BridgeError(
+                "hmac_mode 已开启但未配置 bridge_token",
+                code=contract.ERROR_UNSUPPORTED,
+            )
+        ts = str(int(time.time() * 1000))
+        digest = hmac.new(
+            token.encode("utf-8"), f"{ts}.".encode("utf-8") + body_bytes, hashlib.sha256
+        ).hexdigest()
+        return {
+            "X-Bridge-Timestamp": ts,
+            "X-Bridge-Signature": f"sha256={digest}",
+        }
 
     def _timeout(
         self, *, total: float | None = None, sock_read: float | None = None
@@ -281,14 +310,22 @@ class BridgeTransport:
     ) -> Any:
         self._check_scheme()
         session = await self._ensure_session()
-        merged = self._headers(json_body=body is not None)
+        # 手工编码成 bytes：契约 §5.2 的签名对象是**实际发出的原文**，而 aiohttp 的
+        # ``json=`` 会自己再序列化一次，键序与分隔符都可能变，签名必然对不上。
+        # 这里一次编码、签名和发送共用同一份字节。
+        raw: bytes | None = None
+        if body is not None:
+            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        merged = self._headers(json_body=body is not None, body_bytes=raw)
         if headers:
             merged.update(headers)
         url = self._base_url + path
         timeout = self._timeout(total=float(self._int("request_timeout", 600)))
         try:
             async with session.request(
-                method, url, params=params, json=body, headers=merged, timeout=timeout
+                method, url, params=params, data=raw, headers=merged, timeout=timeout
             ) as resp:
                 text = await resp.text()
             return self._unpack(resp.status, text)

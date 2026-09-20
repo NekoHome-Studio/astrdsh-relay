@@ -85,8 +85,9 @@ DSH Web 已经暴露了一条 RPC 面，本机既有的 `astrbot_plugin_dsh_conn
 | `on-demand` | 首次触发创建；`idleTtlMs` 内无活动则回收（归档，不删除历史）。 |
 | `daily` | 按 DSH 服务器本地日期轮转，跨日新建。 |
 
-回收/轮转时的 DSH 会话走 `workspace.archiveSession`【已证实存在于 RPC 面，
-插件内对应能力【未核实】】，保留历史日志。
+回收/轮转时的 DSH 会话走 `workspace.archiveSession`【已证实存在于 RPC 面，且插件内
+已接线：`workspaceRegistry.archiveSession(sessionId)` 是 §2.3 两条轮转路径的出口】，
+**只归档不删历史**。
 
 ---
 

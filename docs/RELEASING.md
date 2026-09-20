@@ -138,15 +138,16 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 
 ## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 
-**`v0.3.0` 起已是可运行实现**，但下列**三项配置项至今未实现**，只要仍未落地，
-每一次发布说明都必须如实列出：
+**`v0.3.0` 起已是可运行实现**；`v0.6.2` 起契约预留的三项配置也**全部接线**：
 
-- DSH 侧 `assertConfigIsUsable` 对 `hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、
-  `idleTtlMs` **加载即抛错**。三者都是「宁可响亮失败，也不静默降级」。
-- 除此之外，`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
+- DSH 侧 `assertConfigIsUsable` 对 `hmacMode`（契约 §5.2 请求体 HMAC 签名）、
+  `policy` 的 `on-demand` / `daily` 轮转、`idleTtlMs` 空闲回收只做**参数校验**
+  （`policy` 必须落在枚举内、`idleTtlMs` 必须是有限正数），不再「加载即抛错」。
+  轮转与回收走 `workspaceRegistry.archiveSession`，**只归档不删历史**。
+- 端点面：`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
   `/approval`、`/workspaces`、`/session/rebind`、`/session/fork` 九个端点全部可用；
   AstrBot 侧 `BridgeTransport` 的 `health` / `where` / `list_workspaces` / `rebind` /
   `fork` / `send_message` / `events` / `send_approval` / `aclose` 全部实现。
 
-自动生成的 `RELEASE_NOTES.md` 会在开头显式声明“已实现 / 未实现(加载即失败)”。
-**这三项做完之前不要移除该声明。**
+自动生成的 `RELEASE_NOTES.md` 会在开头显式声明「已实现 / 未实现」。当前**已无未实现项**；
+将来若再预留配置，必须在这里补回该声明，**在落地之前不得移除**。

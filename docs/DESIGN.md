@@ -285,8 +285,10 @@ host.on('approval/request', (request, next) => {
    改走 `assistant-stream` 帧流。两侧都要收：旧事件保底、新事件取真源，见契约 §4.2。
 3. 插件热装免重启生效。
 
-**仍未实现的三项配置**（`assertConfigIsUsable` 命中即抛错，不静默降级）：
-`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
+**三项配置已全部接线**：`hmacMode`（契约 §5.2 请求体 HMAC 签名）、`policy` 的
+`on-demand` / `daily` 轮转、`idleTtlMs` 空闲回收。`assertConfigIsUsable` 相应地从
+「加载即抛错」降级为**参数校验**——`policy` 必须落在枚举内、`idleTtlMs` 必须是有限正数，
+仍不静默降级。轮转与回收**只归档不删历史**。
 
 ---
 

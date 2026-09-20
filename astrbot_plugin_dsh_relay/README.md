@@ -102,7 +102,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.6.1.zip -DestinationPath <AstrBot>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.6.2.zip -DestinationPath <AstrBot>\data\plugins\
 ```
 
 在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：

@@ -1,5 +1,31 @@
 # 更新日志
 
+## v0.6.2 — 2026-09-20
+
+### 新增
+
+- **契约预留的三项配置全部接线**，DSH 侧 `assertConfigIsUsable` 相应地从「加载即抛错」
+  降级为**参数校验**（`policy` 必须落在 `one-to-one` / `on-demand` / `daily` 枚举内，
+  `idleTtlMs` 必须是有限正数），仍然不静默降级：
+  - `policy: on-demand` —— **空闲回收**。超过 `idleTtlMs` 无活动的会话被回收：先按
+    `cancel → whenIdle → flush → dispose` 收尾桥接，再 `workspaceRegistry.archiveSession`
+    归档，最后删映射并落盘；扫描间隔取 `max(1000, min(60000, idleTtlMs))`，定时器 `unref()`
+    以免拦住进程退出，正在 attaching / 队列非空的会话视为在途跳过。
+  - `policy: daily` —— **跨日轮转**。处理消息前比对本宿主**本地日期**（`createdAt` 与当前），
+    跨日则归档旧会话再新建，判据用 `createdAt` 而不是 `lastActiveAt`（会话属于它被造出来的那天）。
+  - `idleTtlMs` —— 空闲阈值（毫秒），仅 `on-demand` 使用。
+  - `hmacMode` —— AstrBot 侧补齐**发送端**签名与 `hmac_mode` / `signature_skew_ms` 配置项
+    （契约 §5.2：`ts + "." + rawBody` 的字节，一次编码、签名与发送共用同一份），
+    DSH 侧的原文只读一次校验此前已在。
+- **三条路径都只归档不删历史**：回收与轮转走 `workspaceRegistry.archiveSession`，
+  归档失败（含工作区未知）只记 warn，不影响消息链路。
+
+### 变更
+
+- 文档口径同步：`docs/BRIDGE-CONTRACT.md` §2.3 的「插件内能力【未核实】」改为已接线，
+  `docs/DESIGN.md`、`docs/RELEASING.md`、两份 README 与发版脚本里的
+  「三项未实现 / 加载即失败」全部改为已实现。
+
 ## v0.6.1 — 2026-09-20
 
 ### 修复

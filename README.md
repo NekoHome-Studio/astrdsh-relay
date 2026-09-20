@@ -11,8 +11,8 @@
 | DSH 侧插件 | dsh-astrbot-relay |
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
-> 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
-> 命中时**加载即失败**，不会静默降级。最新发布：`v0.6.1`。
+> 契约预留的三项配置也已接线（`hmacMode` / `policy` 的 `on-demand`·`daily` 轮转 /
+> `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。最新发布：`v0.6.2`。
 
 ## 交付物地图
 
@@ -64,7 +64,7 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 > 九个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
 > `list_workspaces` / `rebind` / `fork` / `send_message` / `events` / `send_approval` /
 > `aclose` 全部实现。
-> 自动生成的发布说明会如实列出「已实现」与「三项未实现（加载即失败）」。
+> 自动生成的发布说明会如实列出「已实现」与「未实现」；当前已无未实现项。
 
 ## 指令速查（AstrBot 侧）
 
@@ -109,10 +109,12 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
    早先「该事件不存在」的结论只对 `0.1.2-rc.1` 成立，已按新版宿主修订，见 DESIGN §P1。
    它是瞬时事件，**必须先连 SSE 再投消息**；最终文本取同源的 `assistant/message`。
 
-## 尚未实现（刻意响亮失败）
+## 预留配置（已接线）
 
-契约里预留的三个配置项还没做，命中时 `assertConfigIsUsable` **加载即抛错**，
-宁可装不上也不静默降级：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
+契约里预留的三个配置项都已落地：`hmacMode`（§5.2 请求体 HMAC 签名）、`policy` 的
+`on-demand` / `daily` 轮转、`idleTtlMs` 空闲回收。`assertConfigIsUsable` 对它们只做
+**参数校验**（`policy` 必须落在枚举内、`idleTtlMs` 必须是有限正数），不再加载即抛错；
+轮转与回收走 `workspaceRegistry.archiveSession`，**只归档不删历史**。
 
 原 P1 的三件实测均已结案：第三方依赖可解析、`ctx.agents.create` 模型选择装法已定、
 插件免重启生效；流式按宿主版本双协议收取（≤`0.1.2-rc.1` 的 `assistant/chunk` 与

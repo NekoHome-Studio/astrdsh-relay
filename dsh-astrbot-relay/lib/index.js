@@ -4,6 +4,7 @@
  * 这是**九个端点全部落地的可运行实现**：
  *   - 已实现：插件契约（name / inject / Config / apply）、配置与 state 校验、
  *     路由表、Bearer 定长鉴权、健康检查、**定位（契约 §12）**、
+ *     **请求体 HMAC 签名（§5.2 强化：服务端原文只读一次 + 时间窗 + 定长比较）**、
  *     会话标题渲染、state.json 的原子读写、
  *     **投递 POST /message（§3.1：幂等表 + 背压 + create/resume 分流 + followup）**、
  *     **幂等记账（§6.1：有界 LRU + TTL + 在途标记）**、
@@ -13,8 +14,9 @@
  *     **工作区清单与改指（§13：GET /workspaces、POST /session/rebind）**、
  *     **对话中分支（§14：POST /session/fork）**、
  *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
- *   - 仍未实现：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
- *     三者都在 `assertConfigIsUsable` 里**加载即抛错**，宁可装不上也不静默降级。
+ *   - 轮转策略已接线（§2.3）：`on-demand` 在 `idleTtlMs` 无活动即归档回收，
+ *     `daily` 按宿主本地日期跨日轮转；两者都只归档、不删历史。
+ *     `assertConfigIsUsable` 里对这两项的判据已由「加载即抛错」换成参数校验。
  *
  * 契约真相来源：`docs/BRIDGE-CONTRACT.md`
  * 设计依据：    `docs/DESIGN.md` §3
@@ -31,7 +33,7 @@
  *      的事件 → 必须自己按 agent.id 过滤，否则串台到用户在 Web UI 的会话。
  */
 import {
-  createHash, randomInt, timingSafeEqual as nodeTimingSafeEqual,
+  createHash, createHmac, randomInt, timingSafeEqual as nodeTimingSafeEqual,
 } from 'node:crypto'
 import Schema from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -45,6 +47,19 @@ import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
 import { loadState, resolveStatePath, saveState } from './state.js'
 
 export const name = 'dsh-astrbot-relay'
+
+/**
+ * 原始请求体的缓存槽。
+ *
+ * 【为什么需要】契约 §5.2 的 `hmacMode` 签名对象是 `ts + "." + rawBody` 的**字节**，
+ * 必须拿服务端实际收到的原文来算。若先 `JSON.parse` 再重新 `JSON.stringify`，
+ * 键序、空白、`\u` 转义都会变，签名永远对不上。所以请求体**只读一次**，
+ * 原文挂在 request 上，签名校验与 JSON 解析共用同一份。
+ */
+const RAW_BODY = Symbol('dsh-astrbot-relay.rawBody')
+
+/** 请求体上限：IM 文本消息不该超过 1 MiB，超了直接掐断。 */
+const MAX_BODY_BYTES = 1_048_576
 
 /**
  * 依赖服务。框架会等它们就绪后再跑 apply。
@@ -71,6 +86,7 @@ export const Config = Schema.object({
   heartbeatMs: Schema.number().default(15000),
   eventBufferSize: Schema.number().default(512),
   hmacMode: Schema.boolean().default(false),            // 可选强化，见契约 §5.2
+  signatureSkewMs: Schema.number().default(60_000),     // HMAC 时间窗，仅在 hmacMode 下生效
 
   // ---- 会话映射与定位 ----
   statePath: Schema.string().default(''),              // 空 = <DSH_HOME>/astrbot-relay/state.json
@@ -180,31 +196,74 @@ export function apply(ctx, config) {
     }
 
     /**
-     * 读并解析 JSON 请求体。
-     * 超 1 MiB 直接掐断（IM 文本消息不该这么大），解析失败返回 null。
+     * 读**原始**请求体。只读一次，原文缓存到 request 上（见 RAW_BODY 的说明）。
+     * 超 1 MiB 直接掐断（IM 文本消息不该这么大）；读失败返回 null。
      */
-    function readJsonBody(request) {
+    function readRawBody(request) {
+      if (request[RAW_BODY] !== undefined) return Promise.resolve(request[RAW_BODY])
       return new Promise((resolve) => {
         let settled = false
-        const done = (value) => { if (!settled) { settled = true; resolve(value) } }
+        const done = (value) => {
+          if (settled) return
+          settled = true
+          request[RAW_BODY] = value
+          resolve(value)
+        }
         const chunks = []
         let size = 0
         request.on('data', (chunk) => {
           size += chunk.length
-          if (size > 1_048_576) {
+          if (size > MAX_BODY_BYTES) {
             request.destroy()
             done(null)
             return
           }
           chunks.push(chunk)
         })
-        request.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf8')
-          if (raw.trim() === '') { done({}); return }
-          try { done(JSON.parse(raw)) } catch { done(null) }
-        })
+        request.on('end', () => done(Buffer.concat(chunks).toString('utf8')))
         request.on('error', () => done(null))
       })
+    }
+
+    /**
+     * 读并解析 JSON 请求体。
+     * 空体视作 `{}`（沿用旧行为）；解析失败返回 null。
+     */
+    async function readJsonBody(request) {
+      const raw = await readRawBody(request)
+      if (raw === null) return null
+      if (raw.trim() === '') return {}
+      try { return JSON.parse(raw) } catch { return null }
+    }
+
+    /**
+     * 请求签名校验（契约 §5.2 的**可选强化**，只在 `hmacMode: true` 时生效）。
+     *
+     * 签名对象是服务端**实际收到的原文**：
+     *   `X-Bridge-Signature: sha256=<hex(hmac_sha256(token, ts + "." + rawBody))>`
+     *   `X-Bridge-Timestamp: <毫秒时间戳>`
+     * 时间戳偏离本地时钟超过 `signatureSkewMs`（默认 60000）即拒，堵住重放。
+     *
+     * 失败一律回 `unauthorized`：契约 §8 要求这个响应体**不区分**失败原因，
+     * 多吐一句「是签名错还是过期了」等于把爆破用的反馈送给对方。
+     * 时间窗与签名**一起**判、且比较定长，避免两类失败在耗时上可区分。
+     *
+     * 只对有请求体的方法（POST）调用：GET /health、/events 这类无体请求没有 rawBody 可签。
+     */
+    function verifySignature(request, response, config, rawBody) {
+      if (config.hmacMode !== true) return true
+      const tsRaw = headerOf(request, 'x-bridge-timestamp')
+      const presented = headerOf(request, 'x-bridge-signature')
+      const ts = Number(tsRaw)
+      const skew = Number(config.signatureSkewMs)
+      const expected = 'sha256=' + createHmac('sha256', String(config.token))
+        .update(`${tsRaw}.${rawBody ?? ''}`, 'utf8')
+        .digest('hex')
+      const fresh = tsRaw !== '' && Number.isFinite(ts) && Math.abs(Date.now() - ts) <= skew
+      const matches = presented !== '' && timingSafeEqual(presented, expected)
+      if (fresh && matches) return true
+      writeError(response, ERROR_CODE.UNAUTHORIZED, 'unauthorized')
+      return false
     }
 
     /** 只广播不入缓冲：给「结果说明帧」用（gap 就是这一类）。 */
@@ -604,6 +663,134 @@ export function apply(ctx, config) {
       return () => clearInterval(timer)
     }, `${name}: heartbeat`)
 
+    // ────────────────────────────────────────────────────────────────
+    // 会话轮转与回收（契约 §2.3：on-demand 空闲回收 / daily 跨日轮转）
+    // ────────────────────────────────────────────────────────────────
+
+    /**
+     * 拆掉一个网桥持有的会话，收尾序与 shutdownBridges 逐字一致：
+     * 摘引用 → cancel({kind:'user'}) → whenIdle() → sessions.flush() → dispose()。
+     *
+     * ⚠️ 先摘引用再收尾：收尾期间新到的 /message 会重新 attach，不会撞上这次拆除。
+     * ⚠️ flush 必须排在 dispose 之前：dispose 会把会话从 store 里删掉
+     *    （dsh-agent types index.d.ts:136-153），顺序反了最后那轮记录直接丢。
+     */
+    async function detachSession(bridge, reason) {
+      const agent = bridge.agent
+      const dispose = bridge.dispose
+      if (!agent) {
+        // 复用 live 的路径拿不到 handle（handleMessage 的 live 优先分流）：
+        // 没有 agent 可拆就只剩引用要摘，别凭空造一个 dispose 出来。
+        bridge.dshSessionId = ''
+        return
+      }
+      bridge.agent = null
+      bridge.dispose = null
+      try {
+        agent.cancel({ kind: 'user' })
+        await agent.whenIdle()
+        await host.sessions.flush(agent.session)
+      } catch (error) {
+        // 排空失败也必须继续 dispose，否则 handle 永远留在 registry 里。
+        log?.warn?.(`${tag} ${reason}：${bridge.conversation} 排空失败，仍继续拆除：${String(error)}`)
+      }
+      try {
+        if (typeof dispose === 'function') await dispose()
+      } catch (error) {
+        log?.warn?.(`${tag} ${reason}：${bridge.conversation} dispose 失败：${String(error)}`)
+      }
+      bridge.dshSessionId = ''
+    }
+
+    /**
+     * 归档一个 DSH 会话（契约 §2.3：回收与轮转都走 `workspace.archiveSession`）。
+     *
+     * 语义（宿主 dsh-workspace/lib/index.js）：经 enqueueOperation 串行、**已归档幂等**、
+     * 会话不在任何工作区时抛 WorkspaceUnknownSessionError。最后一种在本插件里是**正常**
+     * 路径（本插件建的会话未必挂过工作区），所以只 warn，不把它算成回收失败——
+     * 归档失败也照样摘映射：留一个指向「已拆掉的会话」的映射才是真的坏。
+     */
+    async function archiveSessionOf(sessionId, reason) {
+      const registry = workspaceRegistryOf()
+      if (!registry || typeof registry.archiveSession !== 'function') {
+        log?.warn?.(`${tag} ${reason}：宿主未提供 workspaceRegistry.archiveSession()，${sessionId} 未归档`)
+        return false
+      }
+      try {
+        await registry.archiveSession(sessionId)
+        return true
+      } catch (error) {
+        log?.warn?.(`${tag} ${reason}：归档会话 ${sessionId} 失败（已忽略）：${String(error?.message ?? error)}`)
+        return false
+      }
+    }
+
+    /**
+     * 回收一个对话的 DSH 会话：拆桥 → 归档 → 摘映射（**保留历史**）。
+     *
+     * 映射一并删掉是刻意的：契约 §2.3 的 on-demand 是「首次触发创建」，回收之后
+     * 下一次投递就该按首次触发重新分配 id（见 handleMessage 第 2 步）。
+     * 会话本体与日志留在 DSH 侧归档里，本插件不留悬空指针。
+     */
+    async function recycleConversation(conversation, reason) {
+      const record = records.get(conversation)
+      if (!record?.dshSessionId) return false
+      const sessionId = record.dshSessionId
+      const bridge = bridges.get(conversation)
+      if (bridge) await detachSession(bridge, reason)
+      await archiveSessionOf(sessionId, reason)
+      records.delete(conversation)
+      persistRecords()
+      log?.info?.(`${tag} ${reason}：会话 ${sessionId} 已归档回收（历史保留）`)
+      return true
+    }
+
+    /** 宿主本地日期（契约 §2.3 的 daily 判据就是「DSH 服务器本地日期」，不做时区换算）。 */
+    function localDateKey(at) {
+      const date = new Date(at)
+      return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
+    }
+
+    /**
+     * 空闲扫描：`on-demand` 的回收判据，只对**确实空闲**的会话生效。
+     *
+     * 在途判定用网桥自己的 attaching / queue（与 /message 的串行化同一份状态）：
+     * 正在 attach 或还有未排空的投递，就不是「无活动」，绝不能回收。
+     */
+    async function sweepIdleSessions() {
+      const ttl = Math.trunc(config.idleTtlMs)
+      const now = Date.now()
+      for (const [conversation, record] of [...records]) {
+        if (!record?.dshSessionId) continue
+        const bridge = bridges.get(conversation)
+        if (bridge && (bridge.attaching || bridge.queue > 0)) continue
+        const last = Number(record.lastActiveAt) || Number(record.createdAt) || 0
+        if (now - last < ttl) continue
+        await recycleConversation(conversation, '空闲回收')
+      }
+    }
+
+    if (config.policy === POLICY.ON_DEMAND) {
+      // ⚠️ 与心跳同理：必须包在 ctx.effect 里并返回 clearInterval，否则定时器拖住进程退出。
+      // 轮询间隔取 min(60s, idleTtlMs)：再大就会让回收晚过「Ttl + 一个间隔」，
+      // 再小纯属空转（判据是墙钟时间差，扫描快慢不改变回收时刻）。
+      const sweepIntervalMs = Math.max(1000, Math.min(60_000, Math.trunc(config.idleTtlMs)))
+      let sweeping = false
+      ctx.effect(() => {
+        const timer = setInterval(() => {
+          // 上一轮还没扫完就跳过这一轮：扫描里含 await（拆桥 + 归档），
+          // 允许重入会让同一个会话被两条路径同时归档。
+          if (sweeping) return
+          sweeping = true
+          sweepIdleSessions()
+            .catch((error) => log?.warn?.(`${tag} 空闲回收异常：${String(error)}`))
+            .finally(() => { sweeping = false })
+        }, sweepIntervalMs)
+        timer.unref?.()
+        return () => clearInterval(timer)
+      }, `${name}: idle-sweep`)
+    }
+
     /** 审批验证码字母表：去掉 I/O/0/1，人工抄码时不容易认错。 */
     const APPROVAL_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
@@ -701,6 +888,11 @@ export function apply(ctx, config) {
     async function handleMessage(request, response) {
       if (!authorize(request, response, config)) return
 
+      // 签名校验必须先拿到**原文**：readRawBody 只消费一次并缓存，
+      // 下面的 readJsonBody 命中同一份缓存，不会二次读流。
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
+
       const key = headerOf(request, 'idempotency-key')
       if (!key || !UUID_V4.test(key)) {
         writeError(response, ERROR_CODE.UNSUPPORTED,
@@ -777,7 +969,19 @@ export function apply(ctx, config) {
           await (typeof host.get === 'function' ? host : ctx).get('loader')?.await?.()
         } catch { /* 非 launcher 环境下没有 loader，忽略 */ }
 
-        // 2) 冷启动：没有映射就先分配一个 id 并落盘（轮转策略在建映射时决定）。
+        // 2) 跨日轮转闸门（契约 §2.3 的 daily）：宿主本地日期一变，旧会话先归档、
+        //    映射摘掉，于是下面自动走「首次触发」那条路建新会话。
+        //    判据取 createdAt 而非 lastActiveAt：一个会话属于它被造出来的那一天，
+        //    同一天里聊到深夜不算跨日，否则「活跃会话」会天天换 id。
+        //    只对 daily 生效——one-to-one 永不轮转，on-demand 归空闲扫描管。
+        if (config.policy === POLICY.DAILY && bridge.dshSessionId) {
+          const existing = records.get(conversation)
+          if (existing && localDateKey(existing.createdAt ?? 0) !== localDateKey(Date.now())) {
+            await recycleConversation(conversation, '跨日轮转')
+          }
+        }
+
+        // 3) 冷启动：没有映射就先分配一个 id 并落盘（轮转策略在建映射时决定）。
         //    注意这里只分配 **id**，会话本体由下面的 create 建；已有映射时连 id 都不动。
         const hadMapping = Boolean(bridge.dshSessionId)
         if (!bridge.dshSessionId) {
@@ -859,7 +1063,7 @@ export function apply(ctx, config) {
           },
         }
 
-        // 3) live 优先，冷会话才 create / resume。
+        // 4) live 优先，冷会话才 create / resume。
         //    宿主 resume 的前提是目标会话**不在 live registry**：
         //    dsh-session-persistence/lib/index.js:951-965 的 prepare() 一读到
         //    `ctx.sessions.get(id) !== undefined` 就抛
@@ -909,7 +1113,7 @@ export function apply(ctx, config) {
           source: { kind: 'user' },
         }))
 
-        // 3) 不阻塞响应：空闲后 flush 会话记录再放掉在途计数（契约 §9 顺序）。
+        // 5) 不阻塞响应：空闲后 flush 会话记录再放掉在途计数（契约 §9 顺序）。
         bridge.agent.whenIdle()
           .then(() => host.sessions.flush(bridge.agent.session))
           .catch((error) => log?.warn?.(`${tag} 会话收尾失败：${String(error)}`))
@@ -996,6 +1200,8 @@ export function apply(ctx, config) {
     /** POST /approval — IM 回执审批（契约 §3.3）。 */
     async function handleApproval(request, response) {
       if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
       const body = await readJsonBody(request)
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
@@ -1146,6 +1352,8 @@ export function apply(ctx, config) {
      */
     async function handleRebind(request, response) {
       if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
       const body = await readJsonBody(request)
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
@@ -1363,6 +1571,8 @@ export function apply(ctx, config) {
      */
     async function handleFork(request, response) {
       if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
       const body = await readJsonBody(request)
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
@@ -1616,19 +1826,16 @@ function assertConfigIsUsable(config) {
   if (typeof config.sessionTitleTemplate !== 'string' || config.sessionTitleTemplate.trim() === '') {
     throw new Error('dsh-astrbot-relay: sessionTitleTemplate 不能为空（它承担反向定位，空标题等于定位失效）')
   }
-  // 以下三项 schema 里有、实现里没有：**加载期就响亮地失败**，
-  // 而不是让人配上去、跑起来，再对「为什么没生效」百思不得其解。
-  if (config.hmacMode === true) {
-    throw new Error('dsh-astrbot-relay: hmacMode 尚未实现（契约 §5.2 的请求体签名校验），'
-      + '置 true 只是让人以为开了强化')
+  // policy / idleTtlMs 曾经与实现脱节（schema 里有、代码里没有）：当时的选择是
+  // **加载期就响亮地失败**。接线之后（§2.3 的回收与轮转都真的有代码在跑），
+  // 这里只剩参数校验：不再拒绝非默认值，但拒绝不可能执行的值。
+  if (![POLICY.ONE_TO_ONE, POLICY.ON_DEMAND, POLICY.DAILY].includes(config.policy)) {
+    throw new Error(`dsh-astrbot-relay: policy=${JSON.stringify(config.policy)} 不是已知策略`
+      + `（只认 ${POLICY.ONE_TO_ONE} / ${POLICY.ON_DEMAND} / ${POLICY.DAILY}）`)
   }
-  if (config.policy !== POLICY.ONE_TO_ONE) {
-    throw new Error(`dsh-astrbot-relay: policy=${JSON.stringify(config.policy)} 尚未实现`
-      + `（轮转策略目前只写进 state.json、不执行），只支持 ${POLICY.ONE_TO_ONE}`)
-  }
-  if (Number(config.idleTtlMs) !== 86_400_000) {
-    throw new Error('dsh-astrbot-relay: idleTtlMs 尚未实现（没有按空闲时长回收会话的逻辑），'
-      + '改它不会有任何效果')
+  if (!Number.isFinite(Number(config.idleTtlMs)) || Number(config.idleTtlMs) <= 0) {
+    throw new Error('dsh-astrbot-relay: idleTtlMs 必须是正的有限毫秒数，'
+      + `收到 ${JSON.stringify(config.idleTtlMs)}`)
   }
 
   // 渲染一次做冒烟：模板里未知占位符会原样保留，这里只保证渲染本身不抛错。

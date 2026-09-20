@@ -300,7 +300,7 @@ function notes(version, tag, sums, artifacts) {
   const ref = tag || `v${version}`
   return `# AstrDsh Relay（星驿）${ref}
 
-> ⚠️ **P1 + P2 全链路已打通，三项配置项仍未实现。**
+> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置（\`hmacMode\` / \`policy\` 轮转 / \`idleTtlMs\`）自本版起均已接线。**
 >
 > **已实现**（九端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
 > \`GET /conversations\`、\`GET /workspaces\`（工作区清单，\`workspaceRegistry.list()\`）、
@@ -316,9 +316,10 @@ function notes(version, tag, sums, artifacts) {
 > \`/dsh approve|reject\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
 > \`/dsh fork [轮次序号]\`、流式节流回帖与 \`push_to_session\`。
 >
-> **未实现**（DSH 侧 \`assertConfigIsUsable\` **加载即抛错**，不静默降级）：
-> \`hmacMode\`、非 \`one-to-one\` 的 \`policy\`（轮转策略）、\`idleTtlMs\`。
-> 只要不使用这三个配置项，本版本即可正常收发消息。
+> **配置项**：\`hmacMode\`（契约 §5.2 请求体 HMAC 签名）、\`policy\` 的 \`on-demand\` /
+> \`daily\` 轮转、\`idleTtlMs\` 空闲回收均已实现；轮转与回收走
+> \`workspaceRegistry.archiveSession\`，**只归档不删历史**。DSH 侧
+> \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。
 >
 > **两侧必须配对**：本版 \`BRIDGE_VERSION=3\`（v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
