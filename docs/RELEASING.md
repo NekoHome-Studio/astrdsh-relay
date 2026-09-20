@@ -61,6 +61,30 @@ DSH 侧**不发 npm**：本仓库根目录不是一个 npm 包（两个插件是
 
 ## 4. 本地核对产物
 
+### 4.0 前置：工作区行尾必须是 LF
+
+`.gitattributes` 用 `* text=auto eol=lf` 把行尾钉成 LF：仓库里存的是 LF，CI 也是全 LF 检出。
+但 Git **只在检出时**套用这条规则，**不会**回头修正已经被写脏的在位文件——Windows 上用
+`write_text` / `open(..., "w")` 改文件时若没显式给 `newline="\n"`，换行就会变成 CRLF。
+工作区一旦混进 CRLF，本地打出来的产物就会比 CI 多出那些 `\r` 字节，`SHA256SUMS` 对不上。
+这属于**本地工作区问题**，不是包坏了、更不是归档器的锅，排查时先排掉它。所以动手前看一眼：
+
+```powershell
+git status --short                                # 顺带刷新 index 的 stat 缓存
+git ls-files --eol | Select-String 'w/crlf'       # 必须没有任何输出（i/ 是仓库、w/ 是工作区）
+```
+
+真出现 `w/crlf` 就地修回来，只改行尾、不动内容：
+
+```powershell
+git checkout-index -a -f
+```
+
+修完 `git status --short` 应当干净，也**不会**产生新提交；若此时报「内容有变更」，
+那就不只是行尾问题，要按真实改动来审。本仓库的 `core.autocrlf` 已设为 `false`（与 `eol=lf`
+属性配套）；若某台机器上它是 `true`，两条规则会打架，`checkout-index -a -f` 可能修不动，
+先把 `core.autocrlf` 改回 `false` 再修。
+
 **先真跑一次打包，再看内容。** `npm test` 里的版本闸门走的是
 `package-release.mjs --check`，它**只校验、不打包**——归档器的那段代码在
 `--check` 下根本不会被执行。所以「`npm test` 全绿」不等于「打包脚本能跑」：
