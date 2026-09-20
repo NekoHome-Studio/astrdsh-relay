@@ -30,11 +30,25 @@ jobs:
       - name: 全部闸门（npm test）
         run: npm test
 
-      # 完整打包冒烟：产物路径与 zip/tgz 归档器都要能跑通
-      - name: 打包冒烟
+      # 完整打包冒烟：产物路径与 zip/tgz 归档器都要能跑通。
+      # 刻意连打两遍、且跨两个 Node 大版本对照——zip 的 deflate 来自 Node 自带
+      # zlib，tgz 来自随 Node 发行的 npm，归档器一旦哪天把 mtime 或平台差异写回
+      # 条目头，「本地 dist 哈希 == Release 资产哈希」这句承诺就会悄悄失效。
+      # 在这里让它当场出声，好过等用户拿 SHA256 对不上再回来问。
+      - name: 打包冒烟（Node 22）
         run: |
           node scripts/package-release.mjs
-          cd dist && sha256sum -c SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+          cp dist/SHA256SUMS "$RUNNER_TEMP/sums.node22"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 打包冒烟（Node 24）并与 Node 22 的产物逐字节对照
+        run: |
+          node scripts/package-release.mjs
+          diff -u "$RUNNER_TEMP/sums.node22" dist/SHA256SUMS
 
       - name: 上传产物（失败时便于排查）
         if: failure()

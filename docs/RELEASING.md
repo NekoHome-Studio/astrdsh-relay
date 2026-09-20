@@ -51,7 +51,7 @@ tag 推送后 `.github/workflows/release.yml` 会：
 
 | 产物 | 内容 | 为什么是这种形态 |
 |---|---|---|
-| `dsh-astrbot-relay-<v>.tgz` | `npm pack` 的结果，只含 `files` 字段列出的 5 个文件（`lib/`、`cordis.patch.yml`、`README.md`、`package.json`） | 本包是**纯 ESM JS、无构建步骤**。发预打包 tgz 让安装路径**完全不需要** pnpm 的 `allowBuilds` 授权——那条授权等于允许该包在你机器上执行安装期代码。若改成从 git 安装，pnpm ≥10 默认拒绝跑 `prepare`，用户必须先授权才能装上。 |
+| `dsh-astrbot-relay-<v>.tgz` | `npm pack` 的结果，只含 `files` 字段列出的 8 个文件（`LICENSE`、`README.md`、`cordis.patch.yml`、`package.json` 与 `lib/` 下 4 个 JS） | 本包是**纯 ESM JS、无构建步骤**。发预打包 tgz 让安装路径**完全不需要** pnpm 的 `allowBuilds` 授权——那条授权等于允许该包在你机器上执行安装期代码。若改成从 git 安装，pnpm ≥10 默认拒绝跑 `prepare`，用户必须先授权才能装上。 |
 | `astrbot_plugin_dsh_relay-<v>.zip` | 顶层目录为 `astrbot_plugin_dsh_relay/` 的压缩包 | AstrBot 只扫描 `data/plugins/<目录名>/metadata.yaml`，所以归档根目录名**必须**是插件目录名，用户才能「解压进 `data/plugins/`」一步到位。 |
 
 DSH 侧**不发 npm**：本仓库根目录不是一个 npm 包（两个插件是并排的子目录），
@@ -91,6 +91,16 @@ zip 由脚本**自写归档器**生成（条目按路径排序、时间戳钉死
 而不是包坏了——这也是 `.gitignore` 把 `dist/` 排除在外的原因：产物不入库，
 只由脚本确定性重建。
 
+「本地哈希 == Release 资产哈希」这句不是愿望，是有实测托底的：同一份源码分别在
+**Node 22.23.2（npm 10.9.8）**与**Node 24.18.0（npm 11.x）**下各打一次（`v0.4.0`），
+zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz `42e515d3…`），
+`SHA256SUMS` 与 `RELEASE_NOTES.md` 也相同。CI 的打包冒烟会一直做同样的事
+（Node 22 与 Node 24 各打一遍再 `diff` 校验和），所以这条承诺一旦被破坏会当场失败。
+
+反过来说：**换 Node 大版本、动过归档器、或改过 `files` 字段之后，要重新跑一次这个对照**，
+别默认它还成立。已发布的老版 Release 资产是旧脚本打出来的，与今天的本地 `dist`
+对不上属正常——那是脚本变了，不是包坏了。
+
 ## 5. CI 的检查项
 
 `ci.yml` 在 push 到 `main` 与所有 PR 上跑：
@@ -99,7 +109,8 @@ zip 由脚本**自写归档器**生成（条目按路径排序、时间戳钉死
 - AstrBot 侧 `python -m py_compile`（两个 py 文件，骨架不 import astrbot，故无需装依赖）；
 - 两侧契约常量一致性（`scripts/check-contract-parity.mjs`）；
 - 版本一致性闸门；
-- 完整打包冒烟 + 校验和核对。
+- 完整打包冒烟：Node 22 与 Node 24 各真打一遍，两轮的 `SHA256SUMS` 必须逐字节相同，
+  并 `sha256sum -c` 核对（`--check` 不执行归档器，所以这里跑的是真打包）。
 
 ## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 

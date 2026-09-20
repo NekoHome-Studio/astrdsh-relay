@@ -21,6 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 发布用的 Node 大版本：产物已实测与本地（Node 24）逐字节一致，
+      # 依据见 docs/RELEASING.md §4；CI 也有跨版本对照在跑。
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -35,6 +37,8 @@ jobs:
           fi
 
       # 这一步会因版本不一致 / tag 与版本不匹配而失败——这是有意的闸门。
+      # CI 侧重新打包而不是上传某处现成的 dist：产物不入库（见 .gitignore），
+      # 且归档器是确定性的，重建出来的字节与本地 dist 相同，此处重跑即校验。
       - name: 校验版本并打包
         run: node scripts/package-release.mjs "${{ steps.tag.outputs.value }}"
 
