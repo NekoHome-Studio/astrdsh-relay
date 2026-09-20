@@ -34,11 +34,12 @@ expect('BRIDGE_VERSION', js.BRIDGE_VERSION, py.scalars.get('BRIDGE_VERSION'))
 
 // ── 2. 路由 ───────────────────────────────────────────────────────
 // v2 起是八条：WHERE / CONVERSATIONS / WORKSPACES / REBIND 补进白名单。
+// v3 起是九条：再补 FORK。
 // 这几条各自对应 IM 侧一条指令——漏在名单外就等于把新端点放进漂移盲区：
 // JS 侧改了路径而 Python 侧没跟上，闸门仍然绿灯。
 for (const key of [
   'MESSAGE', 'EVENTS', 'APPROVAL', 'HEALTH',
-  'WHERE', 'CONVERSATIONS', 'WORKSPACES', 'REBIND',
+  'WHERE', 'CONVERSATIONS', 'WORKSPACES', 'REBIND', 'FORK',
 ]) {
   expect(`ROUTES.${key}`, js.ROUTES?.[key], py.scalars.get(`ROUTE_${key}`))
 }

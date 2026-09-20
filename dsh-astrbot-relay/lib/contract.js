@@ -14,8 +14,14 @@ import { randomUUID } from 'node:crypto'
  * v2：新增 `GET /workspaces` 与 `POST /session/rebind`（契约 §13）。
  *     对 v1 客户端而言是**增量**，但版本号仍递增——两侧的常量表是逐字对应的，
  *     让版本号忠实记录「这份常量表是哪一版」，比让客户端去猜差异更省事。
+ *
+ * v3：新增 `POST /session/fork`（契约 §14）。同样只加了一条路由，
+ *     **没有**新增错误码：DSH 侧的 `session/fork-unavailable` 与
+ *     `session/workspace-attach-failed` 都落到既有的 `agent_busy`（409），
+ *     `session/not-found` 落到既有的 `not_found`（404）——两者的共同语义是
+ *     「请求本身没错，重试同一个请求也不会成功」，与 IM 侧的提示口径一致。
  */
-export const BRIDGE_VERSION = '2'
+export const BRIDGE_VERSION = '3'
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({
@@ -27,6 +33,7 @@ export const ROUTES = Object.freeze({
   CONVERSATIONS: '/conversations',  // GET   列出已知的对话映射（契约 §12）
   WORKSPACES: '/workspaces',        // GET   列出宿主已登记的工作区（契约 §13.1）
   REBIND: '/session/rebind',        // POST  把某 IM 对话改指到指定工作区（契约 §13.2）
+  FORK: '/session/fork',            // POST  从某对话的完整轮次边界分支出新对话（契约 §14）
 })
 
 /** 下行事件类型。契约 §4。 */
