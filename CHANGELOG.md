@@ -1,5 +1,54 @@
 # 更新日志
 
+## v0.7.2 — 2026-09-20
+
+### 修复
+
+- **`allow_from` 填纯 QQ 号不再失配（真实故障修复）**：v0.7.1 的 `allow_from` 只做
+  完整 UMO 逐字比较，照直觉填 `3430088565` 时与真实 UMO
+  `绫地宁宁:FriendMessage:3430088565` 不相等 → 事件被**静默放行**给默认 LLM，
+  表现是「`/dsh 测试` 没反应、日志里一个字都没有」。文档没写错，是**填法不匹配**；
+  但让用户为加白名单去反查平台 id、消息类型名、session_id 再拼串本来就是设计缺陷，
+  本版判据改为「**填什么都要能对上**」。
+
+### 新增
+
+- **`astrbot_plugin_dsh_relay/allowlist.py`**：零依赖纯函数白名单模块，`main.py` 与
+  `scripts/test-allowlist.py` 共用同一份口径（`tokens_of` / `entry_matches` /
+  `any_match` / `ids_match`）。语法（关键字前缀不区分大小写，值本身区分大小写，
+  `*` 匹配任意长度、`?` 匹配单字符，均可出现在任何字段）：
+  - `*` —— 全部放行；
+  - **纯数字** —— 按**发送者**匹配（私聊群聊都算，v0.7.1 那条填法由此生效）；
+  - `user:` / `qq:` / `u:` —— 同上，显式写法；
+  - `group:` / `grp:` / `g:` —— 该群任何成员，支持 `group:<群号>@<qq>` 限定到人；
+  - `umo:` —— 显式按完整 UMO；
+  - 其余含 `:` 的值 —— 按完整 UMO 逐字匹配（**v0.7.1 老配置原样兼容**）；
+  - 空白 entry 不命中；**空列表 = 全部允许**（沿用旧语义）。
+
+### 修复（两处判据漏洞，先立测试才暴露）
+
+- 群号取不到时 `group:*` **不再放行**：私聊不该被群规则收进来——宁拒绝，不宽放。
+- 平台 id 恰好叫 `user` / `qq` / `u` 时，v0.7.1 老配置 `user:FriendMessage:1`
+  会被误读成「发送者 `FriendMessage:1`」，补一道 UMO 回落。
+
+### 测试
+
+- 新增 `scripts/test-allowlist.py`（**26 项断言**）并接进 `npm test`
+  （`test:allowlist`）。测试内写死现场复刻常量（平台 id `绫地宁宁`、私聊 UMO、
+  QQ `3430088565`），故意不做美化，免得测不到真实形状。
+- `check:py` 收录 `allowlist.py`；`npm test` 全绿：check:syntax → check:py →
+  check:contract → test:location → test:location-text → test:allowlist 26 项 →
+  test:session-title 15 项 → check:version 0.7.2。
+
+### 兼容性
+
+- 端点面、`BRIDGE_VERSION`（仍为 `"3"`）、指令面、配置键均**无变化**；
+  `allow_users` 一并获得宽松填法（走 `ids_match`）。
+- 版本三处同步 **0.7.2**：根 `package.json`、`dsh-astrbot-relay/package.json`、
+  `astrbot_plugin_dsh_relay/metadata.yaml`。
+- 被挡下时仍只记一行 `info`（只记 UMO/ID，不记消息内容），位置仍在**分发之前**，
+  `help` / `where` / `approve|reject` 一个分支都不漏。
+
 ## v0.7.1 — 2026-09-20
 
 ### 新增

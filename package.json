@@ -1,19 +1,20 @@
 {
   "name": "astrdsh-relay-workspace",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "description": "AstrDsh Relay（星驿）工作区根：只放闸门入口，不再是可分发的包。DSH 侧包在 dsh-astrbot-relay/，AstrBot 侧插件在 astrbot_plugin_dsh_relay/。",
   "type": "module",
   "scripts": {
     "check:syntax": "node scripts/check-syntax.mjs",
-    "check:py": "python -m py_compile astrbot_plugin_dsh_relay/contract.py astrbot_plugin_dsh_relay/location_text.py astrbot_plugin_dsh_relay/main.py && node -e \"require('fs').rmSync('astrbot_plugin_dsh_relay/__pycache__',{recursive:true,force:true})\"",
+    "check:py": "python -m py_compile astrbot_plugin_dsh_relay/contract.py astrbot_plugin_dsh_relay/location_text.py astrbot_plugin_dsh_relay/allowlist.py astrbot_plugin_dsh_relay/main.py && node -e \"require('fs').rmSync('astrbot_plugin_dsh_relay/__pycache__',{recursive:true,force:true})\"",
     "check:contract": "node scripts/check-contract-parity.mjs",
     "check:version": "node scripts/package-release.mjs --check",
     "test:location": "node scripts/test-location.mjs",
     "test:session-title": "node scripts/test-session-title.mjs",
     "test:location-text": "python scripts/test-location-text.py",
-    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:session-title && npm run check:version",
+    "test:allowlist": "python scripts/test-allowlist.py",
+    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:allowlist && npm run test:session-title && npm run check:version",
     "dist": "node scripts/package-release.mjs"
   }
 }

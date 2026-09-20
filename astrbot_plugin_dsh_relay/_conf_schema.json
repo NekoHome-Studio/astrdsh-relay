@@ -48,16 +48,16 @@
     "hint": "默认不带斜杠：AstrBot 会先剥掉 wake_prefix(\"/\")，群里敲 /dsh 时插件实读 dsh。匹配时两边各容忍一个前导 /，故 /dsh 与 dsh 都能触发"
   },
   "allow_from": {
-    "description": "会话白名单（UMO 列表，空=全部允许）",
+    "description": "会话白名单（会话 / 成员 / 群，空=全部允许）",
     "type": "list",
     "default": [],
-    "hint": "填 unified_msg_origin，形如 default:GroupMessage:123456"
+    "hint": "填法随便挑：纯 QQ 号 3430088565（=只许他）、group:123456（=该群全员）、group:123456@3430088565（=该群里的他）、绫地宁宁:FriendMessage:3430088565（完整 UMO 逐字匹配）。* 与 ? 通配可用，例 绫地宁宁:GroupMessage:*。留空=全部允许"
   },
   "allow_users": {
     "description": "成员白名单（发送者 ID 列表，空=全部允许）",
     "type": "list",
     "default": [],
-    "hint": "填发送者 user_id（QQ 号），形如 3430088565。与 allow_from 同时填写时两者都要满足；私聊与群聊都按人判，取不到发送者 ID 的消息一律拒绝"
+    "hint": "填发送者 user_id（QQ 号），形如 3430088565，也吃 * 与 ? 通配。与 allow_from 同时填写时两者都要满足；私聊与群聊都按人判，取不到发送者 ID 的消息一律拒绝"
   },
   "reply_in_private_only": {
     "description": "仅在私聊响应",

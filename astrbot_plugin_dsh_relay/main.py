@@ -64,9 +64,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
 try:  # 包内导入（正常安装路径）
+    from . import allowlist
     from . import contract
     from . import location_text
 except ImportError:  # 直接以模块方式加载时的兜底，与同路线既有插件一致
+    import allowlist  # type: ignore[no-redef]
     import contract  # type: ignore[no-redef]
     import location_text  # type: ignore[no-redef]
 
@@ -799,7 +801,7 @@ class Main(Star):
         if tail is None:
             return  # 不匹配：不设结果、不发消息，完全不干扰 AstrBot 默认逻辑
 
-        if not self._session_allowed(event.unified_msg_origin):
+        if not self._session_allowed(event):
             return
 
         # 成员白名单同样在分发之前：help/where/approve 等分支一个都不漏。
@@ -1411,17 +1413,31 @@ class Main(Star):
 
     # ---- 辅助 --------------------------------------------------------
 
-    def _session_allowed(self, umo: str) -> bool:
+    def _session_allowed(self, event: AstrMessageEvent) -> bool:
+        """会话白名单（``allow_from``）：空 = 全部允许。
+
+        匹配交给 ``allowlist.any_match`` —— **宽松填**（纯 QQ 号、群号）与
+        **精确填**（完整 UMO）都要能命中。这里以前只做逐字比较，于是填了纯 QQ 号
+        ``3430088565`` 而真实 UMO 是 ``绫地宁宁:FriendMessage:3430088565``，
+        判 False 后**静默放行**给默认 LLM，表现为「``/dsh 测试`` 没反应」、日志一个字
+        都没有。所以现在：匹配放宽，**被挡下必记一行** ``info``（只记 UMO/ID，
+        不记消息内容）——静默失败比报错贵得多。
+        """
         allow = self._cfg("allow_from", []) or []
         if not isinstance(allow, (list, tuple, set)) or not allow:
             return True  # 空 = 全部允许
-        return umo in {str(item).strip() for item in allow}
+        if allowlist.any_match(allow, self._tokens_of(event)):
+            return True
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        logger.info(f"[dsh_relay] 白名单外的会话 {umo}，已忽略。")
+        return False
 
     def _user_allowed(self, event: AstrMessageEvent) -> bool:
         """成员白名单：空 = 不限制人；两个白名单同时填写时都要满足（AND）。
 
         取不到发送者 ID（`_sender_of` 对非 str/缺失一律返回空串）时按**拒绝**
         处理：白名单非空说明用户明确点名了谁可以用，这时"匿名"不该被放行。
+        匹配同样吃 ``*`` / ``?`` 通配（走 ``allowlist.ids_match``）。
         """
         allow = self._cfg("allow_users", []) or []
         if not isinstance(allow, (list, tuple, set)) or not allow:
@@ -1430,10 +1446,32 @@ class Main(Star):
         if not uid:
             logger.info("[dsh_relay] 白名单外的成员（取不到发送者 ID），已忽略。")
             return False
-        if uid in {str(item).strip() for item in allow}:
+        if allowlist.ids_match(allow, uid):
             return True
         logger.info(f"[dsh_relay] 白名单外的成员 {uid}，已忽略。")
         return False
+
+    @classmethod
+    def _tokens_of(cls, event: AstrMessageEvent) -> dict[str, str]:
+        """把一次事件的「实际形状」摊平成 ``allowlist`` 的待匹配字段。
+
+        ``platform`` / ``message_type`` / ``session_id`` 由 ``allowlist`` 从 UMO 里
+        切（契约已核实 UMO 形如 ``{platform_id}:{MessageType}:{session_id}``），
+        这里只补**发送者**与**群号**。群号取不到就是空串：空串匹配不上任何非空模式，
+        于是解析失败只会「拒绝」，不会「误放行」。
+        """
+        group = ""
+        getter = getattr(event, "get_group_id", None)
+        if callable(getter):
+            with contextlib.suppress(Exception):
+                group = str(getter() or "")
+        if not group:  # 兜底：事件没提供判定方法时，从 message_obj 上取兼容属性
+            group = str(getattr(getattr(event, "message_obj", None), "group_id", "") or "")
+        return allowlist.tokens_of(
+            umo=str(getattr(event, "unified_msg_origin", "") or ""),
+            sender_id=cls._sender_of(event)["id"],
+            group_id=group,
+        )
 
     @staticmethod
     def _sender_of(event: AstrMessageEvent) -> dict[str, str]:

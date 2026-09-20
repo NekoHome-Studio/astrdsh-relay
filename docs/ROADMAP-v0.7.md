@@ -222,3 +222,60 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
   要改需手动重绑或等 refresh 通道。
 - `push_to_session` 仍固定纯文本（沿用 §7.4 的结论）。
 
+---
+
+## 9. 落地记录 · v0.7.2（白名单增强）
+
+### 9.1 起因与定性（沿用 v0.7.1 的结论）
+
+- `/dsh 测试` 无任何反应、日志无痕的定性**不变**：`allow_from` 填的是纯 QQ 号
+  `3430088565`，真实 UMO 是 `绫地宁宁:FriendMessage:3430088565`，逐字比较失败 →
+  事件被静默放行给默认 LLM。
+- UMO 结构取证：`aiocqhttp` 适配器按 `session.message_type` 判群聊，
+  `abm.type` 取 `GROUP_MESSAGE` / `FRIEND_MESSAGE`，`abm.group_id = str(event.group_id)`，
+  `abm.session_id` 群聊取 `group_id`、私聊取 `sender_id`；事件基类提供
+  `get_session_id` / `get_group_id` / `get_sender_id` / `is_private_chat`。
+  → 「平台 id : 消息类型 : 会话 id」三段式可切分，这是 `tokens_of` 的依据。
+- 两条路线里选了**增强白名单**（v0.7.x 支持填纯 QQ 号与通配写法），
+  而不是「文档里加粗『请填完整 UMO』」——后者把设计缺陷留给用户。
+
+### 9.2 语法与判据
+
+见 `CHANGELOG.md` v0.7.2「新增」段与 `allowlist.py` 顶部注释（唯一口径来源）。
+接口定稿：`SENDER_PREFIXES` / `GROUP_PREFIXES` / `UMO_PREFIXES` / `tokens_of` /
+`entry_matches` / `any_match`（供 `allow_from`）/ `ids_match`（供 `allow_users`）/
+`_glob_match`。
+
+### 9.3 两处判据漏洞（先写测试才暴露）
+
+- 群号取不到时 `group:*` 曾会放行 → 私聊会被群规则收进来。已改为**拒绝**：
+  白名单的失败方向必须是「宁拒绝不宽放」。
+- 平台 id 恰好叫 `user` / `qq` / `u` 时，v0.7.1 老配置 `user:FriendMessage:1`
+  会被误读成「发送者 `FriendMessage:1`」→ 已补 UMO 回落。
+- 教训：这两处都是「先立闸门再改代码」抓出来的，靠发消息试错抓不到。
+
+### 9.4 接线与闸门
+
+- `main.py`：`_session_allowed` 改为吃 `event`（走 `_tokens_of` + `any_match`），
+  `_user_allowed` 走 `ids_match`；`_tokens_of` 为 classmethod，群号先
+  `get_group_id` 后 `message_obj.group_id` 兜底，整体 `contextlib.suppress(Exception)` 包裹。
+- 被挡必记一行 `info`（只记 UMO/ID，不记消息内容）。
+- `check:py` 已收录 `allowlist.py`；`package.json` 已加 `test:allowlist` 并串进 `test` 链。
+
+### 9.5 测试与闸门（本轮实跑结果）
+
+- `scripts/test-allowlist.py`：**26 项断言**，含现场复刻常量，不美化。
+- `npm test` 全绿（退出码 0）：check:syntax → check:py → check:contract →
+  test:location → test:location-text → test:allowlist 26 项 → test:session-title 15 项 →
+  check:version 0.7.2。
+- 版本三处同步 0.7.2：根 `package.json`、`dsh-astrbot-relay/package.json`、
+  `astrbot_plugin_dsh_relay/metadata.yaml`。
+
+### 9.6 本切片未做
+
+- `git push origin main --tags` 未执行（v0.7.1 起即未推送）。
+- 实装目录同步与插件重载后**发消息实测**（`/dsh 测试` 应从「落回 LLM」变为被插件接管）
+  归入 R3 收尾验收；`allow_users` 重载验证同样待做。
+- R4 控制面 `/rpc` 与权限门、R3-1 `throughSeq` 语义实测、`push_to_session` 富文本
+  仍按原计划留在后续切片。
+
