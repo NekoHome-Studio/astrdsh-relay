@@ -19,7 +19,9 @@ API 证据：      ``docs/astrbot-side-capabilities.md``
 
 1. ``filter`` 必须从 ``astrbot.api.event`` 导入，避免与内置 ``filter`` 冲突。
 2. ``event.should_call_llm(True)`` —— 传 ``True`` 才是**禁止**默认 LLM
-   （判定是 ``not event.call_llm``，参数语义与直觉相反）。
+   （判定是 ``not event.call_llm``，参数语义与直觉相反）。**每一条接管分支都要调**：
+   ``help`` / ``where`` / ``approve|reject`` 也不例外 —— handler 结束后
+   ``star_request`` 会 ``clear_result()``，只 ``stop_event()`` 仍会被默认 LLM 接手。
 3. ``event.stop_event()`` 必须在 ``yield`` **之后**。先 stop 再 yield 会让
    ``RespondStage`` 不执行，**消息发不出去**。
 4. 中间分片用 ``await event.send(...)``（绕过 ResultDecorateStage，避免被自动包成
@@ -606,9 +608,10 @@ class Main(Star):
         if not self._cfg("enable", True):
             return
 
-        prefix = str(self._cfg("trigger_prefix", "/dsh ") or "")
+        # 匹配规则见 _match_prefix：这里踩过一次真 bug（配置里的尾空格让裸前缀落空）。
         raw = (event.message_str or "").strip()
-        if not prefix or not raw.startswith(prefix):
+        tail = _match_prefix(raw, str(self._cfg("trigger_prefix", "dsh ") or ""))
+        if tail is None:
             return  # 不匹配：不设结果、不发消息，完全不干扰 AstrBot 默认逻辑
 
         if not self._session_allowed(event.unified_msg_origin):
@@ -617,13 +620,16 @@ class Main(Star):
         if self._cfg("reply_in_private_only", False) and not _is_private_chat(event):
             return
 
-        command = raw[len(prefix):].strip()
-        if not command:
-            yield event.plain_result(
-                f"用法：{prefix}<内容>　|　审批：{prefix}"
-                f"{contract.APPROVAL_COMMAND_APPROVE} <验证码>　|　定位："
-                f"{prefix}{contract.COMMAND_WHERE}"
-            )
+        prefix_base = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
+        command = tail.strip()
+        # 裸前缀与 ``help`` 走同一份清单：少一个入口，就少一处会和实现漂移的文案。
+        if not command or command.split(maxsplit=1)[0].lower() == contract.COMMAND_HELP:
+            yield event.plain_result(_usage_text(prefix_base))
+            # 三处「已接管」分支都必须显式禁止默认 LLM：handler 结束后
+            # star_request 会 clear_result()，只剩 stop_event 的话
+            # stage.py 的 `(get_result() and not is_stopped()) or not get_result()`
+            # 仍成立 → 默认 LLM 会再答一遍。
+            event.should_call_llm(True)
             event.stop_event()  # 必须在 yield 之后
             return
 
@@ -633,6 +639,7 @@ class Main(Star):
         if head == contract.COMMAND_WHERE:
             async for result in self._handle_where_command(event):
                 yield result
+            event.should_call_llm(True)
             event.stop_event()
             return
 
@@ -640,6 +647,7 @@ class Main(Star):
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
                 yield result
+            event.should_call_llm(True)
             event.stop_event()
             return
 
@@ -861,7 +869,7 @@ class Main(Star):
             "deadline": time.monotonic() + timeout_ms / 1000.0,
         }
 
-        prefix = str(self._cfg("trigger_prefix", "/dsh ") or "").strip()
+        prefix = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
         lines = [
             "需要你确认一项操作：",
             f"· 工具：{frame.get('toolName') or '未知'}",
@@ -1057,6 +1065,68 @@ class Main(Star):
 # ──────────────────────────────────────────────────────────────────────
 # 纯函数
 # ──────────────────────────────────────────────────────────────────────
+
+def _match_prefix(raw: str, prefix: str) -> "str | None":
+    """前缀匹配，返回**前缀之后的原文**（未 `strip`）；不匹配返回 `None`。
+
+    比裸 `raw.startswith(prefix)` 多做三件事，三件都是踩出来的：
+
+    1. 先把配置值的**尾空格**去掉再比。本机配置里 `trigger_prefix` 实读为
+       `'/dsh '`（含尾空格，长度 5），而用户只敲前缀时消息是 `'/dsh'`（长度 4），
+       `startswith` 会判不匹配、直接 `return` —— 恰好在最需要用法提示的那一刻
+       什么都不回。
+    2. 基名之后必须**紧跟空白或行尾**。否则 `/dshx ...` 这类别的插件的命令
+       会被本插件吞掉（前缀族冲突）。
+    3. **两边各容忍一个前导 `/`**（P0 的正解）。AstrBot 会在事件进插件之前剥掉
+       wake_prefix（本机为 `/`），所以群里敲 `/dsh xx` 时 `event.message_str`
+       实际是 `dsh xx` —— 此时配置写 `/dsh ` 就永远匹配不上，插件默默 `return`，
+       而 `filter.event_message_type(ALL)` 让群聊里 `is_at_or_wake_command` 恒真，
+       默认 LLM 便接手作答（`core/pipeline/process_stage/stage.py` 的判定式）。
+       反过来，私聊或 wake_prefix 被改掉时又会原样送来 `/dsh xx`。因此配置
+       `dsh `、用户敲 `/dsh xx`，与配置 `/dsh `、剥壳后送来 `dsh xx`，两种都要
+       命中。
+    """
+    base = prefix.strip()
+    if base.startswith("/"):
+        base = base[1:]
+    if not base:
+        return None
+    text = raw[1:] if raw.startswith("/") else raw
+    if not text.startswith(base):
+        return None
+    tail = text[len(base):]
+    if tail and not tail[:1].isspace():
+        return None
+    return tail
+
+
+def _usage_text(base: str) -> str:
+    """``/dsh help`` 与「裸前缀」共用的指令清单。
+
+    ``base`` 是**去尾空格**后的前缀（如 ``/dsh``）。用配置里的原串会有两个问题：
+    提示里会多出对不齐的空格，而且用户照抄时会把尾空格也一起抄进去。
+    """
+    rows = [
+        (f"{base} <内容>", "投给 DSH 并流式回帖（本事件被接管，不走默认 LLM）"),
+        (f"{base} {contract.COMMAND_HELP}", "显示本清单"),
+        (
+            f"{base} {contract.COMMAND_WHERE}",
+            "定位本对话的工作区与 DSH 会话（只读，不投给 agent）",
+        ),
+        (
+            f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",
+            "允许一次待审批操作",
+        ),
+        (
+            f"{base} {contract.APPROVAL_COMMAND_REJECT} <验证码>",
+            "拒绝待审批操作",
+        ),
+    ]
+    width = max(len(cmd) for cmd, _ in rows)
+    lines = ["星驿 · 可用指令（把 <内容> 换成你要说的话即可）："]
+    lines.extend(f"  {cmd.ljust(width)}  {desc}" for cmd, desc in rows)
+    return "\n".join(lines)
+
 
 def _is_private_chat(event: AstrMessageEvent) -> bool:
     """私聊判定。

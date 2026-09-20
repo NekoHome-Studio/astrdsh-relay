@@ -32,8 +32,8 @@
   "trigger_prefix": {
     "description": "触发前缀",
     "type": "string",
-    "default": "/dsh ",
-    "hint": "注意 AstrBot 本机 wake_prefix 为 \"/\"，前缀不要与之冲突"
+    "default": "dsh ",
+    "hint": "默认不带斜杠：AstrBot 会先剥掉 wake_prefix(\"/\")，群里敲 /dsh 时插件实读 dsh。匹配时两边各容忍一个前导 /，故 /dsh 与 dsh 都能触发"
   },
   "allow_from": {
     "description": "会话白名单（UMO 列表，空=全部允许）",

@@ -1597,6 +1597,8 @@ support_platforms:
 ```
 
 ### `_conf_schema.json`
+
+> 历史示例提示：下面 `trigger_prefix` 的 `ds ` 是旧口径。现行 astrdsh-relay 的默认前缀为 `dsh `（配置文件里不带斜杠；匹配时先 strip 配置值、剥掉基名的一个前导 `/`、再对消息容忍一个前导 `/`，即 `dsh` 与 `/dsh` 等价，基名后必须紧跟空白或行尾）。实现见 `astrbot_plugin_dsh_relay/main.py` 的 `_match_prefix` 与同目录 `_conf_schema.json`。
 ```json
 {
   "enable": {"description": "启用桥接", "type": "bool", "default": true},
@@ -1680,6 +1682,8 @@ class Main(Star):
         if self._cfg("reply_in_private_only", False) and not event.is_private_chat():
             return
 
+        # 【历史示例】旧实现只做 raw.startswith(prefix)。现行 astrdsh-relay 用 _match_prefix：
+        # strip 配置值 -> 剥基名一个前导 / -> raw 容忍一个前导 / -> 基名后必须紧跟空白或行尾。
         prefix = str(self._cfg("trigger_prefix", "ds ") or "ds ")
         raw = (event.message_str or "").strip()
         if not prefix or not raw.startswith(prefix):
@@ -1836,8 +1840,8 @@ Content-Type: application/json
 1. 把那 3 个平台的 `enable` 确认是 `true`，NapCat 侧的 `websocketClients[].url` 指向 `ws://localhost:<对应端口>/ws` 且 token 一致。
 2. 在 WebUI(6185) → 插件页确认 `IM Bridge` 已加载、`_conf_schema.json` 生成了表单（配置落在 `data/config/astrbot_plugin_im_bridge_config.json`）。
 3. 日志确认：`log_level=DEBUG` 时插件 logger 名为 `astrbot.plugin.<name>`（`core/log.py` 的 `LogManager.get_plugin_logger`，`core/star/base.py:35-49`）。
-4. 若在群里测试，注意既可以用 `ds xxx`（无前缀唤醒依赖，因为 `event_message_type(ALL)` 会让 `is_wake=True`），也可以 `/ds xxx`（此时 wake_prefix 会被剥掉，`event.message_str` 为 `ds xxx`）。
-5. 若同一群里既要桥接又要 AstrBot 自己的 LLM 对话，把 `trigger_prefix` 设得足够独特（如 `ds `），并且**不要**在桥接分支之外调用 `should_call_llm(True)`。
+4. （历史示例，前缀口径已过期：现行 astrdsh-relay 默认 `dsh`，配置不带斜杠。）若在群里测试，注意既可以用 `dsh xxx`（无前缀唤醒依赖，因为 `event_message_type(ALL)` 会让 `is_wake=True`），也可以 `/dsh xxx`（此时 wake_prefix 会被剥掉，`event.message_str` 为 `dsh xxx`）。
+5. 若同一群里既要桥接又要 AstrBot 自己的 LLM 对话，把 `trigger_prefix` 设得足够独特（现行默认 `dsh `，配置里写 `dsh` 即可，别写 `/dsh`），并且**不要**在桥接分支之外调用 `should_call_llm(True)`。
 
 ---
 

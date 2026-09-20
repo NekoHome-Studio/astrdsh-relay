@@ -29,6 +29,16 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
 | `hmacMode`、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` | ⛔ 未实现（**加载即失败**） |
 
+## 用户看到的指令在 AstrBot 侧
+
+本包不注册任何聊天指令，IM 里的 `/dsh ...` 全部由 AstrBot 侧插件解析
+（它决定了哪些文本投给 agent、哪些在前缀分发里就被接走）。**要改指令面，
+去改 `../astrbot_plugin_dsh_relay/`，改这里没有用。**
+
+指令清单、接管行为（`should_call_llm` / `stop_event`）与过滤顺序见
+[`../astrbot_plugin_dsh_relay/README.md`](../astrbot_plugin_dsh_relay/README.md)；
+本包只负责六个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
+
 ## 为什么不用现成的 `/api/<method>` RPC 面
 
 见契约 §1 的决策记录表。三条硬理由：跨机场景下 `/api` 的 Host/Origin 栅栏 +
@@ -41,7 +51,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 或本地 `node scripts/package-release.mjs` 打到 `dist/`），或在克隆里指向本目录：
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.3.4.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.3.5.tgz
 dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 ```
 

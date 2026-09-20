@@ -76,3 +76,8 @@ APPROVAL_COMMAND_REJECT = "reject"
 #: 定位子命令。这是 **AstrBot 侧的 UX 词**，不是线上协议的一部分，
 #: 因此只存在于本文件（DSH 侧那份契约副本里没有对应常量）。
 COMMAND_WHERE = "where"
+
+#: 帮助子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词，不是线上协议的一部分；
+#: 它与「裸前缀」共用同一份清单（`main._usage_text`），因此不存在"文档里有、
+#: 敲下去没反应"的分叉。
+COMMAND_HELP = "help"

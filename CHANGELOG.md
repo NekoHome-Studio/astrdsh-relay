@@ -1,5 +1,31 @@
 # 更新日志
 
+## v0.3.5 — 2026-09-19
+
+### 修复
+
+- AstrBot 侧：**裸 `/dsh` 不再静默无响应**。根因是配置里 `trigger_prefix` 实读为
+  `/dsh `（含尾空格，长度 5），而用户只敲前缀时消息是 `/dsh`（长度 4），
+  `raw.startswith(prefix)` 直接判不匹配后 `return`——恰好在最需要用法提示的时刻
+  什么都不回。改为先 `strip()` 取基名再比，并加约束：基名之后必须紧跟空白或行尾，
+  避免把 `/dshx ...` 这类别的插件的命令吞掉。
+
+### 新增
+
+- AstrBot 侧：`/dsh help`。与裸前缀**共用同一份清单**（`contract.COMMAND_HELP`
+  + `main._usage_text`），两条入口一份文案，不给"文档里有、敲下去没反应"留分叉。
+  清单里写明各子命令是否投给 agent，以及 `approve` / `reject` 属于前缀分发里的
+  独立分支。
+
+### 文档
+
+- `astrbot_plugin_dsh_relay/README.md` 新增「指令用法」小节：五条指令各自的作用、
+  前缀匹配规则、`approve` / `reject` 不被投递、白名单与私聊过滤先于分发、
+  `/dsh where` 本地信息永远打印的取舍。
+- 根 `README.md` 新增「指令速查（AstrBot 侧）」表并指向上面那节，
+  `dsh-astrbot-relay/README.md` 新增「用户看到的指令在 AstrBot 侧」——
+  明确 DSH 侧不注册聊天指令，要改指令面得改 AstrBot 侧。
+
 ## v0.3.4 — 2026-09-19
 
 ### 文档（仅文档，代码无变更）

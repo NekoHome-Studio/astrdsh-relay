@@ -34,6 +34,47 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 流式节流回帖、幂等键复用、重试退避 | ✅ 就位 |
 | 主动推送 `push_to_session` | ✅ 就位 |
 | `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |
+| `/dsh help` 与裸 `/dsh` 共用的指令清单（`_usage_text`） | ✅ 就位 |
+| 前缀匹配按去尾空格的基名判定，两边各容忍一个前导 `/`，基名后必须跟空白/行尾 | ✅ 就位 |
+
+## 指令用法
+
+前缀由配置项 `trigger_prefix` 决定，默认 `dsh `——**不带斜杠**。原因是 AstrBot 会在
+事件进插件之前剥掉 wake_prefix（本机为 `/`）：群里敲 `/dsh xx` 时
+`event.message_str` 已经是 `dsh xx`，配置若写成 `/dsh ` 就永远匹配不上，插件默默
+`return`，而 `filter.event_message_type(ALL)` 让群聊里 `is_at_or_wake_command` 恒真，
+默认 LLM 便接手作答（P0 的成因，判定见 `core/pipeline/process_stage/stage.py`）。
+
+**匹配时不看尾空格**，且**两边各容忍一个前导 `/`**：配置 `dsh ` 时 `/dsh` 与 `dsh`
+都能命中，裸敲前缀（后面什么都没有）也照样有反应；私聊或 wake_prefix 被改掉时原样
+送来的 `/dsh xx` 同样命中。基名之后必须紧跟空白或行尾，`/dshx ...` 这类别的插件的
+命令不会被吞。
+
+| 指令 | 作用 |
+|---|---|
+| `dsh <内容>` | 投给 DSH 并流式回帖。命中后**接管本事件**（`should_call_llm(True)` + `stop_event()`），不会再被 AstrBot 默认 LLM 回一遍 |
+| `dsh help` | 显示指令清单。与裸 `dsh` 是同一份文案（都出自 `main._usage_text`），不存在文档与实现对不上的第二条路径 |
+| `dsh where` | 定位本对话的工作区与 DSH 会话。设计取舍见下 |
+| `dsh approve <验证码>` | 允许**一次**待审批操作（一次性回执，不接受「是/否」这类转述） |
+| `dsh reject <验证码>` | 拒绝待审批操作 |
+
+（上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
+
+四条约束：
+
+- **`approve` / `reject` 不会被当成对话内容投给 agent** —— 它们在前缀分发里就被
+  独立分支接走了，只有「没命中任何已知子命令」的文本才落到投递分支。
+- **每条接管分支都显式 `should_call_llm(True)`**：`help` / `where` / `approve|reject`
+  三条分支只 `stop_event()` 不够。handler 结束后 `star_request` 会 `clear_result()`，
+  于是 `stage.py` 的 `(get_result() and not is_stopped()) or not get_result()` 仍然成立，
+  默认 LLM 会再答一遍。
+- **白名单与私聊过滤在分发之前**：`allow_from`（留空=不限制）与
+  `reply_in_private_only` 先判，不通过就直接 `return`，不设结果、不发消息，
+  完全不干扰 AstrBot 默认逻辑。
+- **`/dsh where` 的本地那几行永远打印**：用户问「我在哪」时最需要的信息
+  （会话键、桥接地址）本来就在本地，不该被一次网络往返的失败拖没——
+  插件刚装、地址填错、桥接端没起，恰恰是最需要定位能力的时刻。远端失败只在
+  结果末尾追加一行失败原因。
 
 ## 安装
 
@@ -41,7 +82,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.3.4.zip -DestinationPath <AstrBot>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.3.5.zip -DestinationPath <AstrBot>\data\plugins\
 ```
 
 在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：

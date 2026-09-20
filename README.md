@@ -12,7 +12,7 @@
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
 > 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
-> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.4`。
+> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.5`。
 
 ## 交付物地图
 
@@ -63,6 +63,24 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 > `/events`（SSE 流式）、`/approval` 六个端点全部落地，AstrBot 侧 `BridgeTransport`
 > 的 `health` / `where` / `send_message` / `events` / `send_approval` / `aclose` 全部实现。
 > 自动生成的发布说明会如实列出「已实现」与「三项未实现（加载即失败）」。
+
+## 指令速查（AstrBot 侧）
+
+前缀由 `trigger_prefix` 决定，默认 `dsh `（**不带斜杠**：AstrBot 会在事件进插件前
+剥掉 wake_prefix `/`，所以配置写 `/dsh ` 会永远匹配不上、最后落到默认 LLM）。匹配按
+**去尾空格**的基名判定，且两边各容忍一个前导 `/`，因此 `dsh`、`/dsh`、`dsh help` 与
+`/dsh help` 落点相同、打出来的是同一份清单
+（文案唯一来源：`main._usage_text`）。完整语义、接管行为与过滤顺序见
+[`astrbot_plugin_dsh_relay/README.md`](astrbot_plugin_dsh_relay/README.md)。
+
+| 指令 | 作用 |
+|---|---|
+| `/dsh <内容>` | 投给 DSH agent 并流式回帖 |
+| `/dsh help` | 显示指令清单 |
+| `/dsh where` | 定位本对话的工作区与 DSH 会话（只读，不投给 agent） |
+| `/dsh approve <验证码>` | 允许一次待审批操作 |
+| `/dsh reject <验证码>` | 拒绝待审批操作 |
+
 ## 三个决定性结论（都改变了原始设计）
 
 1. **路线选 A**：AstrBot 侧普通 Star 插件，复用现有 IM 适配器。
