@@ -302,23 +302,25 @@ function notes(version, tag, sums, artifacts) {
 
 > ⚠️ **P1 + P2 全链路已打通，三项配置项仍未实现。**
 >
-> **已实现**（八端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
+> **已实现**（九端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
 > \`GET /conversations\`、\`GET /workspaces\`（工作区清单，\`workspaceRegistry.list()\`）、
 > \`POST /session/rebind\`（改指到指定工作区：落在目标目录的新会话 + 换映射，旧会话保留）、
+> \`POST /session/fork\`（把某个对话已完成的轮次前缀复制成新会话，源会话只读，
+> 取轮次的口径照抄宿主 \`sessionController.fork\`）、
 > \`POST /message\`（agent 会话驱动：create / resume / followup）、
 > \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
 > （审批 waterfall，4 位一次性 code）；含幂等（有界 LRU + TTL）、事件转发、
 > 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
-> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 八方法（health / where / workspaces /
-> rebind / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
+> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 九方法（health / where / workspaces /
+> rebind / fork / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
 > \`/dsh approve|reject\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
-> 流式节流回帖与 \`push_to_session\`。
+> \`/dsh fork [轮次序号]\`、流式节流回帖与 \`push_to_session\`。
 >
 > **未实现**（DSH 侧 \`assertConfigIsUsable\` **加载即抛错**，不静默降级）：
 > \`hmacMode\`、非 \`one-to-one\` 的 \`policy\`（轮转策略）、\`idleTtlMs\`。
 > 只要不使用这三个配置项，本版本即可正常收发消息。
 >
-> **两侧必须配对**：本版 \`BRIDGE_VERSION=2\`（v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
+> **两侧必须配对**：本版 \`BRIDGE_VERSION=3\`（v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 
 ## 产物
