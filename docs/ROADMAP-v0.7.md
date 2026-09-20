@@ -58,11 +58,13 @@
 
 1. **`session/page` 的 `throughSeq` 语义**：是翻页上界还是起始 seq 未实跑；
    旧 connector 的 `_await_reply` 正压在这个调用上，属阻塞项。
-2. **`sessionTitleTemplate` 应用到 DSH 会话**：当前只在 `/where`、`/conversations` 的
-   **响应字段**里渲染标题（`location.js:66`、`location.js:245`、`index.js:1759-1767`），
-   **没有写进 DSH 会话本身**——`index.js:1095-1100` 的 `agents.create` 只带 `cwd`（+ 可选 `agentPreset`）。
-   后果：DSH Web 会话列表里看不出「哪条来自哪个群」，反向定位这一半功能是空的。
-   严格说这算「未实现」，卡点在「进程内有没有等价的标题写入 API」未知。
+2. **`sessionTitleTemplate` 应用到 DSH 会话** —— **已落地（v0.7.0，实施记录见 §8）**。
+   原先标题只在 `/where`、`/conversations` 的**响应字段**里渲染
+   （`location.js:66`、`location.js:245`、`index.js:1759-1767`），没写进 DSH 会话本身，
+   后果是 DSH Web 的会话列表里看不出「哪条来自哪个群」。
+   卡点「进程内有没有等价的标题写入 API」已解开：宿主有 `session-title` 服务，
+   请求期 `host.get` 取不到时回落 `ctx.get`（`lib/session-title.js` 的 `titlesOf`）；
+   三条口子的取舍见 §8。
 3. **只有静态证据的项**：`fetch.register` 的 SSE、exact 路由抢占、进程内直调。
 4. **契约 §9 残余**：`@deepseek-ai/schemastery` 第三方可解析性（**该条已结案：
    `dsh-astrbot-relay/lib/index.js:71-76` 的【未核实】注释已在本轮改掉**，
@@ -83,7 +85,7 @@ Settings、图片卡合并进本插件。** 这一步决定 R2-3（P5）的规�
 
 | 切片 | 内容 | 理由 |
 |---|---|---|
-| **v0.7.0** | R1（配置键不再说谎）✅ 已落地 + R3-1 `throughSeq` 实测 + R3-2 标题真正写进 DSH + 顺手修 `index.js:73` 过期注释 ✅ 已修 | 全是小改动，但堵住「配置无效」和「反向定位看不见」两个真实体感问题 |
+| **v0.7.0** | R1（配置键不再说谎）✅ 已落地 + R3-1 `throughSeq` 实测 + R3-2 标题真正写进 DSH ✅ 已落地 + 顺手修 `index.js:73` 过期注释 ✅ 已修 | 全是小改动，但堵住「配置无效」和「反向定位看不见」两个真实体感问题 |
 | **v0.7.x** | R4 决策后按 P5 分片：控制面 `/rpc` + 权限门 + 集成测试 | 权限门在 P5 是「不做就是提权漏洞」（DESIGN §7.3.1） |
 | **不排期** | 契约显式不做项：`user-questions` 转发、v1 暴露流式控制面端点（必须走 `ctx.typertGateway.stream`） | 设计取舍，不是欠账 |
 
@@ -157,3 +159,65 @@ Settings、图片卡合并进本插件。** 这一步决定 R2-3（P5）的规�
   `group.group_admins`**，不复用 `is_admin()`。
 - 7.4 的「健康检查失败是否暂停投递」仍未决策 —— 当前实现维持「只标记 + 下一条消息带
   原因」，不暂停。
+
+---
+
+## 8. 落地记录 · R3-2（v0.7.0）
+
+### 8.1 实际接线（`dsh-astrbot-relay/lib/`）
+
+- 新增 `lib/session-title.js`：`titlesOf(host, ctx)` 取宿主的 `session-title` 服务
+  （`host.get` 取不到回落到 `ctx.get`）；`writeSessionTitle(bridge)` **只记日志、绝不抛错**——
+  服务缺席静默跳过，其余失败 `warn` 并带 `reason` 与 `conversation`。
+  理由：标题是「锦上添花」，为它把消息链路打断不划算。
+- `index.js` 三处：
+
+| 位置 | 行为 |
+|---|---|
+| `handleMessage` | live 复用分支与 create/resume 之后、`followup` **之前**写入 |
+| `rebind` | 改指之后新会话**就地补写**（且**不抹**旧会话标题——旧标题仍是历史事实） |
+| `fork`（`host.agents.create` 子会话） | **显式不写**，理由见 8.2 |
+
+- 「提示超长」的比较基准改用 `result.rendered`（**交出去的原文**）而非落盘 title。
+  原因写成注释了：dsh 侧永远截到限内，拿落盘 title 比会得到一段永不触发的死代码。
+
+### 8.2 fork 路径不写标题（本轮拍板的取舍）
+
+fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属于任何对话**，
+硬写只会落一条无归属标题——比空标题更糟，因为它看起来像是有来源的。
+所以：**不跟随父标题、不单独渲染**，等 IM 侧真正接管（`/message` 或 `/session/rebind`）
+时由那两处自动补上。
+
+### 8.3 写入语义：写入即钉住
+
+一旦写过，标题就 supersede 宿主的自动生成标题与 LLM 自动起标题，此后**只有显式 refresh
+才解开**。这是有意选的硬边——反向定位是这一半功能存在的唯一理由，
+名字被自动改名等于把功能做没。
+
+### 8.4 长度口径（改模板前必算）
+
+- 渲染结果按 **UTF-8 截到 80 字节**，按字符边界退让，不切坏多字节字符。
+- 默认模板前缀 `星驿 · default/GroupMessage/` 占 **31 字节**，留给平台/类型/会话 id 的只有
+  **49 字节**。`·` 是 **U+00B7**，占 **2** 字节；U+30FB「・」与 U+2022「•」才是 3 字节。
+- 中文每字 **3 字节**。
+- ⚠ 本轮踩过：先前按「相似的中间点都是 3 字节」估算，结论是错的。
+  这类断言必须让工具算真值（`node -e` 打印码位与 `Buffer.byteLength`）再写死。
+
+### 8.5 测试与闸门（本轮实跑结果）
+
+- 新增 `scripts/test-session-title.mjs`（**15 项断言**），已接进 `npm test`
+  （`test:session-title`）。覆盖：正常写入 / 落盘结果优先 / `accepted` 带回 /
+  未知占位符原样保留 / `{conversation}` 含冒号不切坏 / 超长照交不截 /
+  会话缺席 `no-session` / 空白 `empty-title` / 服务缺席（4 种形态）`service-missing` /
+  `InvalidError` 归 `invalid-title` / not live 与抛非 `Error` 归 `rename-failed` /
+  空参不炸 / 字节长度与 80 上限。
+- 闸门：`test:session-title` 首跑 13 通过 2 失败、次跑 **15 通过 0 失败**；
+  `check-syntax` **10 个文件 0 失败**。
+- 该模块**零依赖**，15 项断言不需要装 dsh 依赖即可跑——这是模块零依赖化的直接收益。
+
+### 8.6 本切片未做
+
+- 标题写入**不跟随** `sessionTitleTemplate` 的后续变更（改配置不会回改已钉住的会话），
+  要改需手动重绑或等 refresh 通道。
+- `push_to_session` 仍固定纯文本（沿用 §7.4 的结论）。
+

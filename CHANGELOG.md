@@ -1,5 +1,38 @@
 # 更新日志
 
+## v0.7.1 — 未发布
+
+### 新增
+
+- **DSH 会话标题真正写进会话**：`sessionTitleTemplate` 渲染出的标题此前只出现在
+  `/where`、`/conversations` 的**响应字段**里，DSH Web 的会话列表看不出「哪条来自哪个群」。
+  现在由新增的 `lib/session-title.js` 就地写入（宿主 `session-title` 服务，
+  `host.get` 取不到时回落 `ctx.get`）：`/message` 的建会话与复用分支、
+  `/session/rebind` 改指之后，都在 `followup` **之前**写。
+  - **写入即钉住**：写过的标题 supersede 宿主的自动生成标题与 LLM 自动起标题，
+    此后只有显式 refresh 才解开——反向定位是硬需求，被自动改名等于把功能做没。
+  - **`/fork` 的子会话不写**：fork 请求体没有 `conversation` 可反查，
+    子会话此刻不属于任何对话，硬写只会落一条「看起来有来源」的无归属标题。
+  - **写入失败绝不打断消息链路**：该模块只记日志、不抛错；服务缺席静默跳过，
+    其余失败 `warn` 带 `reason` 与 `conversation`。
+  - **长度口径**：按 UTF-8 截到 **80 字节**、按字符边界退让。默认模板前缀
+    `星驿 · default/GroupMessage/` 占 **31 字节**（`·` = U+00B7，**2** 字节），
+    留给平台/类型/会话 id 的只有 49 字节；中文每字 3 字节。
+
+### 测试
+
+- 新增 `scripts/test-session-title.mjs`（15 项断言）并接入 `npm test`
+  （`test:session-title`）：覆盖正常写入、落盘结果优先、未知占位符原样保留、
+  `{conversation}` 含冒号不切坏、超长照交不截、会话/服务缺席、
+  `InvalidError` → `invalid-title`、not live 与抛非 `Error` → `rename-failed`、
+  空参、字节长度与 80 上限。
+- 该模块零依赖，**不装 dsh 依赖即可跑**。
+
+### 兼容性
+
+- 端点面、`BRIDGE_VERSION`（仍为 `"3"`）、指令面、配置键均**无变化**，
+  新行为不影响既有会话映射；被钉住的标题属于新增副作用，可用显式 refresh 解除。
+
 ## v0.7.0 — 2026-09-20
 
 ### 新增

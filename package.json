@@ -11,8 +11,9 @@
     "check:contract": "node scripts/check-contract-parity.mjs",
     "check:version": "node scripts/package-release.mjs --check",
     "test:location": "node scripts/test-location.mjs",
+    "test:session-title": "node scripts/test-session-title.mjs",
     "test:location-text": "python scripts/test-location-text.py",
-    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run check:version",
+    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:session-title && npm run check:version",
     "dist": "node scripts/package-release.mjs"
   }
 }

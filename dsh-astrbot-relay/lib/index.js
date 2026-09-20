@@ -44,6 +44,7 @@ import {
   APPROVAL_CODE_LENGTH, APPROVAL_OUTCOME, APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
 } from './contract.js'
 import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
+import { applySessionTitle, TITLE_MAX_BYTES, TITLE_RESULT, titleByteLength } from './session-title.js'
 import { loadState, resolveStatePath, saveState } from './state.js'
 
 export const name = 'dsh-astrbot-relay'
@@ -186,6 +187,56 @@ export function apply(ctx, config) {
         bridges.set(conversation, bridge)
       }
       return bridge
+    }
+
+    /**
+     * 取 session-title 服务。由 dsh-base 的 cordis.patch.yml 挂载（config 里给了
+     * maxTitleBytes: 80），本插件**不自己补挂**，取不到就退化成写标题功能缺席。
+     * 写法与上面的 loader 取值一致：注入作用域优先，退回根 ctx。
+     */
+    function titlesOf() {
+      try {
+        return (typeof host.get === 'function' ? host : ctx).get('sessionTitle')
+      } catch {
+        return void 0
+      }
+    }
+
+    /**
+     * R3「反向定位」的落点：把来源 IM 对话的标题写进 DSH 会话，于是从 Web UI 的
+     * 会话列表出发就能认出这条会话对应哪个群 / 哪个人。
+     *
+     * 调用前置条件：`bridge.agent` 必须是**已 live** 的 agent —— dsh-session-title 的
+     * rename 第一步就校验 `ctx.sessions.get(session.id) === session`，排在
+     * create/resume 之前必抛 not live。三个调用点都排在赋值之后。
+     *
+     * 只记日志、绝不抛错：起标题是锦上添花，不该让一条 IM 消息投不出去。
+     * 已知副作用（有意为之）：用户来源标题会 supersede 自动生成，写入之后该会话
+     * 不再随对话内容自动改标题，只有显式 refresh 才解钉 —— 反向定位要的正是这种稳定。
+     */
+    function writeSessionTitle(bridge) {
+      const result = applySessionTitle({
+        titles: titlesOf(),
+        session: bridge.agent?.session,
+        template: config.sessionTitleTemplate,
+        conversation: bridge.conversation,
+      })
+      if (result.ok) {
+        // 比的是**交出去原文**（rendered）而不是落盘结果：dsh 侧永远把超长截到限内，
+        // 拿 title 比必然「没超」，这条提示会变成死代码。
+        const bytes = titleByteLength(result.rendered)
+        if (bytes > TITLE_MAX_BYTES) {
+          log?.warn?.(`${tag} 会话标题 ${bytes} 字节超过上限 ${TITLE_MAX_BYTES}，`
+            + `已被 dsh 侧按字节截断：${result.title}`)
+        }
+        return result
+      }
+      // 服务缺席是**容错分支**，不是部署错误：老 profile 不升 dsh-base 时静默跳过。
+      if (result.reason === TITLE_RESULT.SERVICE_MISSING) return result
+      log?.warn?.(`${tag} 写会话标题失败（${result.reason}，已忽略）：`
+        + `${result.error === undefined ? '标题为空' : String(result.error)}`
+        + ` / conversation=${bridge.conversation}`)
+      return result
     }
 
     /** 记录请求头（node 会小写化，但不要假设，两边都查一次）。 */
@@ -1108,6 +1159,11 @@ export function apply(ctx, config) {
           bridge.dispose = handle.dispose
         }
 
+        // R3：把来源 IM 对话写进会话标题。排在两分支之后 —— live 复用与 create/resume
+        // 到这一步都已经拿到 live agent，rename 的 not live 校验才过得去；同时也排在
+        // followup 之前，标题先定下来，用户点进去看时列表里就已经认得出是哪个群了。
+        writeSessionTitle(bridge)
+
         bridge.agent.followup(createUserMessage({
           content: [{ type: 'text', text }],
           source: { kind: 'user' },
@@ -1540,6 +1596,11 @@ export function apply(ctx, config) {
         bridge.toolCalls = new Map()
         bridge.approvals = new Map()
 
+        // R3：改指后新会话还没被任何东西写过标题，这里就地补上，否则列表里那一条
+        // 会退回显示成一串 dshSessionId。旧会话的标题原样留着（它不再被本对话指向，
+        // 但本体还在原工作区，不该顺手抹掉别人的痕迹）。
+        writeSessionTitle(bridge)
+
         writeJson(response, 200, {
           ok: true,
           conversation,
@@ -1700,6 +1761,10 @@ export function apply(ctx, config) {
           return
         }
 
+        // R3 刻意**不在这里**写标题：fork 的请求体里没有 conversation（它只是「把某个
+        // 会话的前缀复制一份」），没有源 IM 对话可反查；而且子会话此刻不属于任何对话，
+        // 硬写只会落一条谁也认不出归属的标题。等 IM 侧真的接管它（/message 或
+        // /session/rebind）时，那两处的 writeSessionTitle 会自然补上。
         if (workspace !== void 0) {
           try {
             // attachSession 要求存档头里的 cwd 存在、能被 realpath 归一、且等于
