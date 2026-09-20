@@ -142,3 +142,18 @@ Settings、图片卡合并进本插件。** 这一步决定 R2-3（P5）的规�
   出图要另走 `Context.send_message` + `Image` 组件，未验证，故不动。
 - 健康检查失败目前**不**暂停投递，只把原因前置给用户——「自动停用」需要
   先定用户可见语义（是静默、还是每次回一句），留给共犯决策。
+
+### 7.5 R1 收尾补记（v0.7.0 发布前同批）
+
+- **`allow_users` 成员白名单（新增功能，非原 R1 范围）**：`allow_from` 只认会话（UMO），
+  用户要的语义是「只有这些人可以用」——按发送者判。落地位置与既有两道过滤一致
+  （分发之前），AND 语义，取不到发送者 ID 时拒绝，被挡只记一行 `info`
+  （只记 ID、不记内容）。设计依据回填到 `docs/DESIGN.md` §3 策略表与 §4 配置清单
+  （原文只写 `group_id`/`user_id`，实现里当时只有会话级）。
+- **版本口径漂移修复**：R1 落地后 `package.json` / `dsh-astrbot-relay/package.json` /
+  `metadata.yaml` 三处仍写 `0.6.2`，本批统一升到 `0.7.0`，`npm run check:version` 复验。
+- **权限语义取证结论落文档**：`is_admin()` 只认 AstrBot 管理员（读写链路见
+  `docs/astrbot-side-capabilities.md` §3.6）。**结论：插件做群管判定必须自读
+  `group.group_admins`**，不复用 `is_admin()`。
+- 7.4 的「健康检查失败是否暂停投递」仍未决策 —— 当前实现维持「只标记 + 下一条消息带
+  原因」，不暂停。

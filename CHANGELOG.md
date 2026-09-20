@@ -1,5 +1,41 @@
 # 更新日志
 
+## v0.7.0 — 2026-09-20
+
+### 新增
+
+- **成员白名单 `allow_users`**：`allow_from` 判的是「哪个会话」，这一项判的是「哪个人」。
+  两者同时填写时为 **AND**——既要在允许的会话里，也要是名单上的人。比对的是发送者
+  `user_id`（QQ 号），私聊与群聊一律**按人**判；取不到发送者 ID 的消息按**拒绝**处理
+  （白名单非空即用户已点名，此时「匿名」不该放行）。判定位置与 `allow_from`、
+  `reply_in_private_only` 相同——**在分发之前**，`help` / `where` / `approve|reject`
+  一个分支都不漏；被挡下时只记一行 `info` 日志，**只记 ID、不记消息内容**。
+- **`health_interval_ms` 周期健康检查**：按间隔调 `transport.health()`，失败只把桥接标记为
+  未就绪并写下原因，**下一条用户消息立刻带原因**（不是干等超时），恢复后自动转回就绪；
+  `health_interval_ms=0` 即不建任务。`terminate` 里显式 cancel 并 `await asyncio.wait({task})`，
+  不让常驻任务挂住插件卸载。
+- **`reply_render_mode="card"`**：复用 AstrBot 基类现成的 `Star.text_to_image` 出图
+  （沿用当前 t2i 模板与端点，**不自建渲染、不引入新依赖**）。**任一分片渲染失败或返回空
+  URL，就丢弃全部已生成的图片、整条降级纯文本**并告警——t2i 是外部服务，半图半文比纯文本更糟。
+
+### 变更
+
+- 版本口径对齐：根 `package.json`、`dsh-astrbot-relay/package.json`、
+  `astrbot_plugin_dsh_relay/metadata.yaml` 三处由 `0.6.2` 一并升到 `0.7.0`
+  （发布脚本 `check:version` 三处一致才放行；文档此前已按 R1 落地口径更新，版本号却还停在
+  上一版，本版把这个漂移修掉）。
+- `docs/astrbot-side-capabilities.md` 新增 §3.6：`is_admin()` 判的是 **AstrBot 管理员**，
+  aiocqhttp **不写** `event.role`，群管理员因此**不等于** AstrBot 管理员；要做群管级判定
+  必须自读 `event.message_obj.group.group_admins`；`PermissionTypeFilter` 权限不足时
+  是**静默不触发**（`stop_event()` 那行被注释掉了），自带权限门须自行补提示。
+- `docs/DESIGN.md` 的配置清单与策略表补上成员白名单这一行（原表述只写了
+  `group_id`/`user_id` 列表，实现里当时只有会话级 UMO）。
+
+### 兼容性
+
+- **端点面、`BRIDGE_VERSION`（仍为 `"3"`）、指令面均无变化**，v0.6.2 的用户换包即可升级，
+  配置无需改动（新配置项 `allow_users` 默认空 = 不限制人，行为与升级前一致）。
+
 ## v0.6.2 — 2026-09-20
 
 ### 新增

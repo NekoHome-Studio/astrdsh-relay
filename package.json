@@ -1,6 +1,6 @@
 {
   "name": "astrdsh-relay-workspace",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "description": "AstrDsh Relay（星驿）工作区根：只放闸门入口，不再是可分发的包。DSH 侧包在 dsh-astrbot-relay/，AstrBot 侧插件在 astrbot_plugin_dsh_relay/。",

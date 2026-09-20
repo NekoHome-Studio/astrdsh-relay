@@ -802,6 +802,10 @@ class Main(Star):
         if not self._session_allowed(event.unified_msg_origin):
             return
 
+        # 成员白名单同样在分发之前：help/where/approve 等分支一个都不漏。
+        if not self._user_allowed(event):
+            return
+
         if self._cfg("reply_in_private_only", False) and not _is_private_chat(event):
             return
 
@@ -1412,6 +1416,24 @@ class Main(Star):
         if not isinstance(allow, (list, tuple, set)) or not allow:
             return True  # 空 = 全部允许
         return umo in {str(item).strip() for item in allow}
+
+    def _user_allowed(self, event: AstrMessageEvent) -> bool:
+        """成员白名单：空 = 不限制人；两个白名单同时填写时都要满足（AND）。
+
+        取不到发送者 ID（`_sender_of` 对非 str/缺失一律返回空串）时按**拒绝**
+        处理：白名单非空说明用户明确点名了谁可以用，这时"匿名"不该被放行。
+        """
+        allow = self._cfg("allow_users", []) or []
+        if not isinstance(allow, (list, tuple, set)) or not allow:
+            return True
+        uid = self._sender_of(event)["id"].strip()
+        if not uid:
+            logger.info("[dsh_relay] 白名单外的成员（取不到发送者 ID），已忽略。")
+            return False
+        if uid in {str(item).strip() for item in allow}:
+            return True
+        logger.info(f"[dsh_relay] 白名单外的成员 {uid}，已忽略。")
+        return False
 
     @staticmethod
     def _sender_of(event: AstrMessageEvent) -> dict[str, str]:

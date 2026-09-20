@@ -109,7 +109,7 @@ AstrBot 侧只做键的转发与「最近 UMO」缓存（用于主动推送）�
 | 策略 | 实现 | v1 建议 |
 |---|---|---|
 | 指令前缀 | 前缀匹配 | ✅ **默认启用**，行为可预期、易调试 |
-| 会话白名单 | `_conf_schema.json` 里配 `group_id`/`user_id` 列表 | ✅ 作为前缀策略之上的**附加过滤**（AND），而非替代 |
+| 会话 / 成员白名单 | `_conf_schema.json` 里配 `allow_from`（UMO）与 `allow_users`（发送者 ID）列表 | ✅ 作为前缀策略之上的**附加过滤**（AND），而非替代；两项白名单之间也是 AND |
 | AI 路由 | 用 AstrBot 的 LLM 判意图 | ❌ 一期不做：引入不确定性与额外 token 成本，且失败模式难解释 |
 
 **失败模式**：前缀误命中（用户正常聊天恰好以此开头）→ 通过白名单 + 前缀尽量取
@@ -247,8 +247,8 @@ host.on('approval/request', (request, next) => {
 
 ### AstrBot 侧（`_conf_schema.json`）
 
-`bridge_url`、`bridge_token`(`secret`)、`trigger_prefix`、`allow_from`（白名单）、
-`reply_in_private_only`、`timeout`、`throttle_ms`、`flush_chars`、`flush_hard_chars`、`chunk_size`、
+`bridge_url`、`bridge_token`(`secret`)、`trigger_prefix`、`allow_from`（会话白名单）、
+`allow_users`（成员白名单）、`reply_in_private_only`、`timeout`、`throttle_ms`、`flush_chars`、`flush_hard_chars`、`chunk_size`、
 `reply_render_mode`、`approval_enabled`、`health_interval_ms`、`retry_max_attempts`、
 `ca_bundle_path`、`allow_insecure_http`。
 
