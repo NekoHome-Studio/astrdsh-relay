@@ -269,12 +269,13 @@ host.on('approval/request', (request, next) => {
 | 阶段 | 内容 | 出口标准 |
 |---|---|---|
 | **P0** | 契约 + 设计 + 两侧骨架 | ✅ 本文档 + `BRIDGE-CONTRACT.md` + 两个插件目录 |
-| **P1 打通** | DSH 侧：路由 + 鉴权 + `/health` + `/message` + `agents.create/followup/whenIdle` + SSE 推 `message/final`；AstrBot 侧：前缀触发 + 单次请求 + 整段回帖 | ✅ 已达成：六端点全部有真实 handler，`BridgeTransport` 六方法全部实现；契约 §9 三件实测已结案 |
+| **P1 打通** | DSH 侧：路由 + 鉴权 + `/health` + `/message` + `agents.create/followup/whenIdle` + SSE 推 `message/final`；AstrBot 侧：前缀触发 + 单次请求 + 整段回帖 | ✅ 已达成（P1 时点口径）：当时六端点全部有真实 handler、`BridgeTransport` 六方法全部实现；契约 §9 三件实测已结案。**v0.5.0 起为八端点 / 八方法，见下表 P7** |
 | **P2 流式与审批** | `session/event` 的 `assistant/chunk` → `text/delta` 节流回帖；`approval/request` → 一次性 code → IM 回执 | ✅ 已达成：SSE 下行 + agent 事件转发 + 审批 waterfall（4 位一次性 code，超时 fail closed） |
 | **P3 韧性** | 幂等表、环形缓冲 + `Last-Event-ID` 续传、429 背压、health 轮询、DSH 重启恢复 | 🚧 部分落地：幂等有界 LRU + TTL、环形缓冲与 `Last-Event-ID` 续传、429 背压、AstrBot 侧 health/重试退避已就位；DSH 重启恢复待验证 |
 | **P4 呈现** | 长度切分、Markdown 降级/图片卡、图片与 attachment 回传（可搬 connector 的 `reply_render.py`） | QQ 上长回复可读、代码块可读 |
 | **P5 控制面接管** | 见 §7.2 / §7.3：用管道式转发接管控制面，搬 10 条「可直接搬」项，补权限门与集成测试 | 能力总览表逐项覆盖；测试真正发 HTTP |
 | **P6 退役** | 见 §7.2：前缀完全覆盖，移除 connector | 卸载 connector 不丢功能 |
+| **P7 工作区** | 见契约 §13：`GET /workspaces`（清单，`workspaceRegistry.list()`）+ `POST /session/rebind`（改指），IM 侧 `/dsh workspaces`、`/dsh rebind <id>` | ✅ 已达成（v0.5.0）：八端点全部有真实 handler，`BridgeTransport` 八方法全部实现，`BRIDGE_VERSION` 升 `2` |
 
 **P1 三件实测（均已结案）**：
 1. `ctx.agents.create` 的模型选择装法已定并落地。

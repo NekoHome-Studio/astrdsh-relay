@@ -1,7 +1,7 @@
 /**
  * dsh-astrbot-relay（星驿）— IM ↔ DSH 网桥（DSH 侧 / host half）
  *
- * 这是**六个端点全部落地的可运行实现**：
+ * 这是**八个端点全部落地的可运行实现**：
  *   - 已实现：插件契约（name / inject / Config / apply）、配置与 state 校验、
  *     路由表、Bearer 定长鉴权、健康检查、**定位（契约 §12）**、
  *     会话标题渲染、state.json 的原子读写、
@@ -10,6 +10,7 @@
  *     **环形缓冲与 SSE 广播（§3.2 的 push/deliver/closeSse，含 Last-Event-ID 续传）**、
  *     **agent 事件转发（旧 session/event/assistant/chunk 与新 agent/assistant-stream 双协议 → text/delta）**、
  *     **审批 waterfall（approval/request → 4 位一次性 code → POST /approval）**、
+ *     **工作区清单与改指（§13：GET /workspaces、POST /session/rebind）**、
  *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
  *   - 仍未实现：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
  *     三者都在 `assertConfigIsUsable` 里**加载即抛错**，宁可装不上也不静默降级。
@@ -48,7 +49,7 @@ export const name = 'dsh-astrbot-relay'
  * 依赖服务。框架会等它们就绪后再跑 apply。
  * 已核实：`dsh-agent-loop` 提供 agents factory，且本机 web profile 已挂载它。
  */
-export const inject = ['webServer', 'agents', 'sessions', 'agentDefaultModel']
+export const inject = ['webServer', 'agents', 'sessions', 'agentDefaultModel', 'workspaceRegistry']
 
 /**
  * 配置 schema。
@@ -110,7 +111,7 @@ export function apply(ctx, config) {
   const statePath = resolveStatePath(config.statePath)
   const { records, existed: stateExisted } = loadState(statePath)
 
-  ctx.inject(['webServer', 'agents', 'sessions', 'agentDefaultModel'], (host) => {
+  ctx.inject(['webServer', 'agents', 'sessions', 'agentDefaultModel', 'workspaceRegistry'], (host) => {
     const log = host.logger ?? ctx.logger
     const tag = `[${name}]`
 
@@ -347,6 +348,8 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.APPROVAL), handler: handleApproval },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WHERE), handler: handleWhere },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.CONVERSATIONS), handler: handleConversations },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.WORKSPACES), handler: handleWorkspaces },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.REBIND), handler: handleRebind },
     ]
 
     ctx.effect(() => {
@@ -1065,6 +1068,283 @@ export function apply(ctx, config) {
       const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 200) : 50
       const items = [...records.keys()].sort().slice(0, limit).map((conversation) => locationFor(conversation))
       writeJson(response, 200, { count: records.size, returned: items.length, limit, items })
+    }
+
+    /**
+     * 取宿主的工作区注册表（注入声明里有它，但被裁过的装配仍可能缺席）。
+     * 缺席一律走 500，而不是静默返回空清单——「没有工作区」和「问不到工作区」
+     * 对 IM 侧是完全不同的两件事，混在一起会让人按空清单去排查半天。
+     */
+    function workspaceRegistryOf() {
+      try {
+        if (host.workspaceRegistry) return host.workspaceRegistry
+        return typeof host.get === 'function' ? host.get('workspaceRegistry') : void 0
+      } catch {
+        return void 0
+      }
+    }
+
+    /**
+     * GET /workspaces?limit=N — **已实现**（契约 §13.1）。
+     *
+     * 列出宿主 `workspaceRegistry` 里登记的工作区，供 IM 侧挑「改指」的目标。
+     *
+     * 为什么直接问服务、不走控制面 RPC：`workspace.list` 在 docs/control-plane-transport.md
+     * 里**没有对应端点**（第 44 / 452 / 490 / 500 / 693 行只有服务与事件），
+     * 唯一可用的入口就是 `workspaceRegistry.list()`。
+     *
+     * 注意 `list()` 是**同步**的（官方 dsh-workspace/lib/index.js:384-390：按持久化的
+     * workspaceIds 顺序返回，读内存、不做持久化读、不排队），所以本函数不是 async。
+     */
+    function handleWorkspaces(request, response) {
+      if (!authorize(request, response, config)) return
+      const registry = workspaceRegistryOf()
+      if (!registry || typeof registry.list !== 'function') {
+        writeError(response, ERROR_CODE.INTERNAL, '宿主未提供 workspaceRegistry.list()，工作区清单不可用')
+        return
+      }
+      let listed
+      try {
+        listed = registry.list()
+      } catch (error) {
+        writeError(response, ERROR_CODE.INTERNAL,
+          `读取工作区清单失败：${String(error?.message ?? error)}`)
+        return
+      }
+      // 只暴露公开读取面（id / path / title / sessionIds），不碰实体内部的 record：
+      // 私有字段是官方实现细节，抄进来等于给自己埋一个「升级即断」的点。
+      const all = (Array.isArray(listed) ? listed : []).map((workspace) => ({
+        id: workspace.id,
+        path: workspace.path,
+        title: workspace.title,
+        sessionIds: workspace.sessionIds,
+      }))
+      // limit 的读法与 /conversations 逐字一致（默认 50、上限 200）：两个列表端点若在
+      // 截断口径上分叉，就成了「必须靠人记住」的差异，迟早被踩。
+      const raw = Number(queryOf(request).searchParams.get('limit') ?? 50)
+      const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 200) : 50
+      const items = all.slice(0, limit)
+      writeJson(response, 200, { count: all.length, returned: items.length, limit, items })
+    }
+
+    /**
+     * POST /session/rebind — **已实现**（契约 §13.2）。
+     *
+     * 把某个 IM 对话**改指**到另一个工作区：为它新建一个落在目标目录的 DSH 会话，
+     * 再把映射换过去。旧会话**不删也不摘**——它的 cwd 仍是原目录，从原工作区里
+     * 摘掉它才是说谎（官方 attachSession 的四条校验也是按 cwd 认账的）。
+     *
+     * 为什么必须换会话 id、不能「就地改 cwd」：会话头里的 cwd 在创建时定死，
+     * 官方唯一允许的路径是「建会话 → attachSession」，且 attachSession 要求
+     * readSessionHeader(sessionId).cwd === record.path，没有任何一条路能改已存在的会话。
+     *
+     * 建会话与挂载的**顺序照抄**官方 SessionCommandController.create
+     *（dsh-api-session-controller/lib/index.js:548-600）：workspaceId 与 cwd 互斥
+     * → 查注册表 → 先 create → 成功后再 attachSession。
+     */
+    async function handleRebind(request, response) {
+      if (!authorize(request, response, config)) return
+      const body = await readJsonBody(request)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+      // 校验文案与 /approval 的字段校验保持一致：同一份契约里不该有两套措辞。
+      const fields = ['conversation', 'workspaceId']
+      for (const field of fields) {
+        const value = body[field]
+        if (typeof value !== 'string' || value.trim() === '') {
+          writeError(response, ERROR_CODE.UNSUPPORTED, `字段 ${field} 必须是非空字符串`)
+          return
+        }
+      }
+      const conversation = body.conversation.trim()
+      const workspaceId = body.workspaceId.trim()
+
+      const registry = workspaceRegistryOf()
+      if (!registry || typeof registry.get !== 'function') {
+        writeError(response, ERROR_CODE.INTERNAL, '宿主未提供 workspaceRegistry.get()，按 id 改指不可用')
+        return
+      }
+      // get() 同步、未命中返回 undefined（官方 dsh-workspace/lib/index.js:375-377）。
+      const workspace = registry.get(workspaceId)
+      if (!workspace) {
+        writeError(response, ERROR_CODE.NOT_FOUND, `未知工作区 ${workspaceId}`)
+        return
+      }
+      // 目录没了的登记项要在**建会话之前**拦下：拖到 attachSession 才炸的话，
+      // 报错会是一句没有上下文的 stat 失败，排查的人只能自己去翻注册表。
+      const status = typeof workspace.status === 'function' ? workspace.status() : 'ok'
+      if (status !== 'ok') {
+        // 收口到 409，不回 400：400 在 IM 侧一律被判成「调用方的问题、不可重试」
+        // （`_unpack` 的 retryable 只看状态码），而目录不可用是**服务端侧的环境故障**，
+        // 等目录回来再试才是正确动作。
+        // 复用 `agent_busy` 是权衡结果：ERROR_STATUS 表里 409 只挂着这一个码，
+        // 新增 503 要同改两侧常量、契约文档与 parity 白名单，收益不抵成本。
+        writeError(response, ERROR_CODE.AGENT_BUSY,
+          `工作区目录当前不可用（${status}）：${workspace.path}`,
+          { conversation, workspaceId, status })
+        return
+      }
+
+      const bridge = bridgeOf(conversation)
+      // 与 /message 同一条串行化纪律：有投递在途时改指，会让同一条消息落到两个会话里。
+      if (bridge.attaching || bridge.queue > 0) {
+        writeError(response, ERROR_CODE.AGENT_BUSY,
+          '该会话有投递或附着在途，请稍后再改指', { conversation })
+        return
+      }
+      bridge.attaching = true
+
+      try {
+        const previousSessionId = records.get(conversation)?.dshSessionId ?? ''
+        const nextSessionId = newSessionId()
+        const cwd = workspace.path
+
+        // boot 闸门：loader 未就绪时 agents.create 会失败（与 /message 同一处理）。
+        try {
+          await (typeof host.get === 'function' ? host : ctx).get('loader')?.await?.()
+        } catch { /* 非 launcher 环境下没有 loader，忽略 */ }
+
+        // 预设（工具行的唯一载体）：取舍同 /message——缺预设只警告，不把改指打挂。
+        const presets = (() => {
+          try {
+            return typeof host.get === 'function' ? host.get('agentPresets') : void 0
+          } catch {
+            return void 0
+          }
+        })()
+        if (presets === void 0) {
+          log?.warn?.(`${tag} agentPresets 服务缺席：改指后的会话不挂预设，模型将没有任何工具`)
+        }
+        // 新会话沿用**旧存档里的**预设（官方 assertPresetUnchanged 的同一语义）：
+        // 改指不该顺手把工具行换掉，那会变成一次没人预期的能力变更。
+        // 存档头没有该字段（早期会话就是这种）时才回落到当前默认预设。
+        let storedPresetId
+        if (previousSessionId && presets !== void 0) {
+          let observation
+          try {
+            const observe = host.sessionQuery?.observeSession
+            if (typeof observe === 'function') {
+              observation = await observe.call(host.sessionQuery, brandString(previousSessionId))
+              storedPresetId = observation?.header?.agentPreset
+            }
+          } catch { /* 读不到存档头就按默认预设挂，不值得让改指失败 */ } finally {
+            // SessionObservation 是租约，不释放会 pin 住 prepared 缓存条目。
+            observation?.[Symbol.dispose]?.()
+          }
+        }
+        const presetId = presets === void 0 ? void 0 : (await presets.resolve(storedPresetId)).id
+
+        // 每次附着取一份 selection 快照并随 agent 固定下来（照抄 dsh-headless:126-145）。
+        const selection = host.agentDefaultModel.currentSelection()
+        const attachOptions = {
+          agentOptions: { provider: selection.provider, model: selection.model },
+          setup: async (agentCtx) => {
+            installModelSelection(agentCtx, { current: selection, assembled: void 0 })
+            if (presets !== void 0) await presets.mount(agentCtx, presetId)
+          },
+        }
+
+        // 【顺序是有意的】新会话先建、先挂，**旧 agent 在此之前原封不动**：
+        // 这样改指的每一步失败都能原地退出——bridge 仍指着旧会话，不需要任何回滚。
+        // 反序（先拆旧、再建新）的代价是拆完才发现新会话建不起来，桥会停在
+        // 「旧 agent 已没了、新会话也没有」的中间态上。
+        const handle = await host.agents.create({
+          sessionId: brandString(nextSessionId),
+          meta: {
+            cwd,
+            // 照抄官方 ensureSession 的写法：presetId 缺席时**不写这个键**。
+            ...presetId === void 0 ? {} : { agentPreset: presetId },
+          },
+          ...attachOptions,
+        })
+
+        try {
+          // attachSession 要求存档头里的 cwd 存在、能被 realpath 归一、且等于
+          // record.path——四者全过才记账。任何一条不过都会抛，这属**正常失败路径**，
+          // 抛到外层兜底变成 500 会让人以为网桥坏了，所以在这里就地收口成 409。
+          // ⚠ 此刻新会话**已经落盘**（create 成功即写档），只是没挂上工作区：
+          // 把它连同 sessionId 一起回报出去，IM 侧才知道「建出来过一个会话」不是幻觉。
+          await workspace.attachSession(nextSessionId)
+        } catch (error) {
+          let released = false
+          try {
+            if (typeof handle.dispose === 'function') { handle.dispose(); released = true }
+          } catch { /* 收尾失败不掩盖主因 */ }
+          writeError(response, ERROR_CODE.AGENT_BUSY,
+            `会话已建立，但挂到工作区失败：${String(error?.message ?? error)}`,
+            { conversation, workspaceId, sessionId: nextSessionId, cwd, orphaned: true, released })
+          return
+        }
+
+        // 新会话就位之后才拆旧的，收尾序照搬 shutdownBridges（同文件下方）：
+        // 先摘引用（收尾期间新到的 /message 会因 attaching 拿到 409，撞不上这次拆除）
+        // → cancel({kind:'user'}) → await whenIdle() → await sessions.flush(session) → dispose()。
+        // dispose() 会把该会话从 store 里删掉（dsh-agent types index.d.ts:136-153），
+        // 所以 flush 必须排在它**之前**，否则旧会话最后那轮记录直接丢。
+        const previousAgent = bridge.agent
+        const previousDispose = bridge.dispose
+        bridge.agent = null
+        bridge.dispose = null
+        if (previousAgent) {
+          try {
+            previousAgent.cancel({ kind: 'user' })
+            await previousAgent.whenIdle()
+            await host.sessions.flush(previousAgent.session)
+          } catch (error) {
+            // 排空失败也必须继续 dispose，否则 handle 永远留在 registry 里。
+            log?.warn?.(`${tag} 改指：${conversation} 旧会话排空失败，仍继续拆除：${String(error)}`)
+          }
+        }
+        if (typeof previousDispose === 'function') {
+          try {
+            // dispose 只在**本网桥持有 handle 时**才有值（复用别人建的 live 时拿不到），
+            // 拿不到就交给 provider 卸载时自己排空，不能凭空造一个 dispose 出来。
+            await previousDispose()
+          } catch (error) {
+            // 拆不掉旧 agent 不该连累改指本身：新会话是新建的，与旧 handle 无关。
+            log?.warn?.(`${tag} 改指时释放旧 agent 失败（已忽略）：${String(error)}`)
+          }
+        }
+
+        // 映射换成新会话。字段**只能**经 newRecord 生产：手写就等于把 location.js 的
+        // 白名单抄了第二份，漂移的后果是「写进去了、重启后没了」的静默丢映射。
+        records.set(conversation, newRecord({
+          conversation,
+          dshSessionId: nextSessionId,
+          // 对话级 cwd 覆盖：这正是「改指」在本插件里的落点（§12.3）。
+          cwd,
+          policy: config.policy,
+        }))
+        persistRecords()
+
+        // 就地改写网桥，**不 delete 重建**：SSE 订阅者、环形缓冲与 seq 都挂在它身上，
+        // 换实例等于把正在看流的客户端全踢掉，Last-Event-ID 续传也会出洞。
+        // agent 事件按 agent.id 过滤，旧 agent 的残帧会在这一步之后自动被丢弃。
+        bridge.dshSessionId = nextSessionId
+        bridge.agent = handle.agent
+        bridge.dispose = handle.dispose
+        bridge.turn = 0
+        bridge.attempt = null
+        bridge.toolCalls = new Map()
+        bridge.approvals = new Map()
+
+        writeJson(response, 200, {
+          ok: true,
+          conversation,
+          workspaceId,
+          sessionId: nextSessionId,
+          cwd,
+          // 旧会话只是「不再被这个对话指向」，本体与账目都原样留在原工作区。
+          previousSessionId: previousSessionId || null,
+        })
+      } catch (error) {
+        writeError(response, ERROR_CODE.INTERNAL,
+          `改指失败：${String(error?.message ?? error)}`, { conversation })
+      } finally {
+        bridge.attaching = false
+      }
     }
 
     // ────────────────────────────────────────────────────────────────

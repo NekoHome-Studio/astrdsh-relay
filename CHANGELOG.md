@@ -1,5 +1,46 @@
 # 更新日志
 
+## v0.5.0 — 2026-09-20
+
+### 新增
+
+- **两条 DSH 端点**，两侧契约 `BRIDGE_VERSION` 由 `"1"` 升到 `"2"`
+  （**两侧必须配对**：v0.4.x 的 `"1"` 与本版不互通，AstrBot 侧启动时校验
+  `GET /health` 的 `bridgeVersion`，不匹配即**拒绝启用**）：
+  - `GET /workspaces?limit=N` —— 只读列出宿主 `workspaceRegistry.list()` 里登记的工作区
+    （`id` / `path` / `title` / `sessionIds`）。该注册表**没有 RPC 端点**，只有进程内可取，
+    故由这一个只读端点透出；装配被裁掉注册表时走 **500**，不静默返回空清单
+    （「没有工作区」与「问不到工作区」对 IM 侧是两件事）。
+  - `POST /session/rebind` —— 把某个对话**改指**到指定工作区：在目标目录新建会话并换掉映射，
+    旧会话保留（它的目录没变，摘掉才是说谎）。走的是宿主自己的 `workspaceId` 建会话路径，
+    即「既有语义的薄封装」，不做「就地改 cwd」——会话头里的 cwd 创建时定死。
+- **两条 IM 指令**：`dsh workspaces`、`dsh rebind <工作区 id>`；`BridgeTransport` 相应增加
+  `workspaces` / `rebind` 两个方法（共八方法）。指令面因此由五条变七条。
+- 列表响应统一为 `{count, returned, limit, items}`：`count` 是总数、`returned` 是本次返回条数；
+  `limit` 默认 50、上限 200。`conversations` 与 `workspaces` 同口径。
+
+### 修复
+
+- **错误映射收口，不再把正常失败路径报成 500**：目标目录不可用 → `409 agent_busy`；
+  `attachSession` 抛错 → 同样 `409`。这两处收口到 409、**不回 400**（IM 侧把 400 一律判成
+  调用方问题、不可重试），也**不新增 503**（会牵动 `ERROR_STATUS`、两侧常量、契约与 parity
+  白名单）。
+- **孤儿会话如实回报**：`create` 成功而 `attachSession` 失败时新会话**已经落盘**，响应里带上
+  `sessionId` / `cwd` / `orphaned: true` / `released`，不假装什么都没发生。
+- **改指后的收尾顺序**：`create` + `attach` 全部成功后才摘旧引用，再
+  `cancel → whenIdle → flush → dispose`（`flush` 必须在 `dispose` 前，否则最后一段输出丢掉）。
+- **失败文案去重**：`_prefixed_failure` 不再无脑拼前缀，避免「改指失败：改指失败：…」这种
+  同一次失败看起来发生了两遍的提示；错误码仍留在末尾。
+
+### 文档
+
+- 契约新增 §13（两条端点、判定表、details 字段）与 §13.2 的收口说明；`docs/RELEASING.md`
+  端点清单同步为八条。
+- 三份 README 与 `docs/DESIGN.md` 的「六端点 / 六方法 / 五条指令」口径统一为
+  「八端点 / 八方法 / 七条指令（v0.5.0 口径）」。
+- `docs/connector-surface.md` §2.5 的「指令面刻意只有五条」属 v0.4.0 迁移基线的历史结论，
+  保持原样，本版口径见插件 README。
+
 ## v0.4.1 — 2026-09-20
 
 ### 修复

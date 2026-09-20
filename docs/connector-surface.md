@@ -212,7 +212,8 @@
 1. **清单只有一个生产来源**：`contract.COMMAND_HELP` + `main._usage_text()`，
    裸前缀与 `/dsh help` 两条入口读的是同一份文案（v0.3.5），
    不存在"HELP 常量与分支各写一遍"的机会——旧插件那两处重复正是这么来的。
-2. **指令面刻意只有五条**（`<内容>` / `help` / `where` / `approve` / `reject`），
+2. **指令面刻意只有五条**（`<内容>` / `help` / `where` / `approve` / `reject`；
+   v0.5.0 起为七条，新增 `workspaces` / `rebind`——此处描述的是 v0.4.0 基线），
    旧插件那批"HELP 未列出"的子命令面（`session` / `config` / `settings` /
    `workspaces` / `subagents` / `goal` 与全部中文别名）**不在 relay v0.4.0 内**，
    于是"清单列了但敲不动"与"敲得动但清单不列"两种漂移都无从产生。

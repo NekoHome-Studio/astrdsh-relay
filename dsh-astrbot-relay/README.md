@@ -9,7 +9,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**P1 + P2 已落地，是可运行实现。** 六个端点全部有真实 handler；仅三项配置项未实现，
+**P1 + P2 已落地，是可运行实现。** 八个端点全部有真实 handler；仅三项配置项未实现，
 命中时 `assertConfigIsUsable` **加载即抛错**，不静默降级。
 
 | 部位 | 状态 |
@@ -25,6 +25,8 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `POST /message`（agent 会话驱动） | ✅ 就位（`agents.create` / `followup` / `whenIdle`） |
 | `GET /events`（SSE 下行 + 事件转发） | ✅ 就位（环形缓冲 + `push` / `deliver` / `Last-Event-ID` 续传） |
 | `POST /approval`（审批 waterfall） | ✅ 就位（4 位一次性 code，`askApproval` 挂 `approval/request`） |
+| `GET /workspaces`（工作区清单，契约 §13.1） | ✅ 就位（`workspaceRegistry.list()` 的只读面投影） |
+| `POST /session/rebind`（改指到指定工作区，契约 §13.2） | ✅ 就位（建新会话 + 换映射，旧会话保留） |
 | 幂等（有界 LRU + TTL）、卸载期 `cancel → whenIdle → flush → dispose` 收尾 | ✅ 就位 |
 | 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
 | `hmacMode`、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` | ⛔ 未实现（**加载即失败**） |
@@ -37,7 +39,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 指令清单、接管行为（`should_call_llm` / `stop_event`）与过滤顺序见
 [`../astrbot_plugin_dsh_relay/README.md`](../astrbot_plugin_dsh_relay/README.md)；
-本包只负责六个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
+本包只负责八个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
 
 ## 为什么不用现成的 `/api/<method>` RPC 面
 
@@ -51,7 +53,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 或本地 `node scripts/package-release.mjs` 打到 `dist/`），或在克隆里指向本目录：
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.4.1.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.5.0.tgz
 dsh --profile web --dump-config    # 应出现 "# == dsh-astrbot-relay" 层
 ```
 

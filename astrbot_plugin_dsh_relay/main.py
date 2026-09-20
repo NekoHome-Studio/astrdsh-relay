@@ -1,9 +1,10 @@
 """AstrDsh Relay（星驿）· AstrBot 侧 IM ↔ DSH 网桥。
 
 实现状态（P1/P2 已落地，P4 仅剩 card 模式）：
-  * ``BridgeTransport``：``/health``（版本协商）、``/where``、``/message``
-    （幂等 + 重试 + 同会话串行）、``/events``（aiohttp 手读 SSE，Last-Event-ID
-    续传，heartbeat/gap 处理）、``/approval`` 全部实现。
+  * ``BridgeTransport``：``/health``（版本协商）、``/where``、``/workspaces``
+    （列出桥接端工作区）、``/session/rebind``（把对话改指到指定工作区）、
+    ``/message``（幂等 + 重试 + 同会话串行）、``/events``（aiohttp 手读 SSE，
+    Last-Event-ID 续传，heartbeat/gap 处理）、``/approval`` 全部实现。
   * ``Main``：先连 SSE 再投递的闭环、``code → callId`` 反查、
     ``text/delta`` 节流回帖、审批事件转达、主动推送 ``push_to_session``。
   * ``chunk_size`` 的语义化切分已落地（段落 / 代码围栏感知，见 ``_split_for_im``）。
@@ -20,7 +21,8 @@ API 证据：      ``docs/astrbot-side-capabilities.md``
 1. ``filter`` 必须从 ``astrbot.api.event`` 导入，避免与内置 ``filter`` 冲突。
 2. ``event.should_call_llm(True)`` —— 传 ``True`` 才是**禁止**默认 LLM
    （判定是 ``not event.call_llm``，参数语义与直觉相反）。**每一条接管分支都要调**：
-   ``help`` / ``where`` / ``approve|reject`` 也不例外 —— handler 结束后
+   ``help`` / ``where`` / ``workspaces`` / ``rebind`` / ``approve|reject``
+   也不例外 —— handler 结束后
    ``star_request`` 会 ``clear_result()``，只 ``stop_event()`` 仍会被默认 LLM 接手。
 3. ``event.stop_event()`` 必须在 ``yield`` **之后**。先 stop 再 yield 会让
    ``RespondStage`` 不执行，**消息发不出去**。
@@ -109,6 +111,21 @@ class BridgeError(Exception):
     def __str__(self) -> str:
         head = str(self.args[0]) if self.args else "桥接调用失败"
         return f"{head}（{self.code}）" if self.code else head
+
+
+def _prefixed_failure(prefix: str, message: Any) -> str:
+    """给失败消息套前缀，但**不重复**。
+
+    桥接端对同一次失败也会自己加前缀（``lib/index.js`` 的 ``改指失败：…``），
+    无脑 ``f"{prefix}：{message}"`` 会拼出「改指失败：改指失败：…」，看起来
+    像同一次失败发生了两遍。
+
+    ``message`` 末尾由 ``BridgeError.__str__`` 补的错误码保持不动：那是用户
+    唯一能拿来报给我们定位的线索。
+    """
+    text = str(message or "").strip() or "未知错误"
+    head = f"{prefix}："
+    return text if text.startswith(head) else f"{head}{text}"
 
 
 class BridgeTransport:
@@ -234,6 +251,25 @@ class BridgeTransport:
             details=err.get("details"),
         )
 
+    @staticmethod
+    def _ensure_ok(info: Any, what: str) -> dict[str, Any]:
+        """校验 200 响应体里的 ``ok``（契约 §11.1）。
+
+        契约允许**成功状态码 + ``{ok: false, error}``** 这种表达法：只看状态码会把
+        一次失败当成成功，然后拿着空的 ``sessionId`` 去拼给用户看。两种形状都要认，
+        所以每个读响应体的方法都过这里。
+        """
+        if not isinstance(info, dict):
+            raise BridgeError(f"{what}返回了意外结果")
+        if info.get("ok") is False:
+            err = info.get("error") if isinstance(info.get("error"), dict) else {}
+            raise BridgeError(
+                str(err.get("message") or f"{what}失败"),
+                code=str(err.get("code") or contract.ERROR_INTERNAL),
+                details=err.get("details"),
+            )
+        return info
+
     async def _request(
         self,
         method: str,
@@ -263,9 +299,9 @@ class BridgeTransport:
 
     async def health(self) -> dict[str, Any]:
         """``GET /health``；启动时校验 ``bridgeVersion``，不匹配则拒绝启用。"""
-        info = await self._request("GET", contract.ROUTE_HEALTH)
-        if not isinstance(info, dict):
-            raise BridgeError("健康检查返回了意外结果")
+        info = self._ensure_ok(
+            await self._request("GET", contract.ROUTE_HEALTH), "健康检查"
+        )
         version = str(info.get("bridgeVersion") or "")
         if version != contract.BRIDGE_VERSION:
             raise BridgeError(
@@ -286,9 +322,40 @@ class BridgeTransport:
         info = await self._request(
             "GET", contract.ROUTE_WHERE, params={"conversation": conversation}
         )
-        if not isinstance(info, dict):
-            raise BridgeError("定位查询返回了意外结果")
-        return info
+        return self._ensure_ok(info, "定位查询")
+
+    # ---- §13.1 /workspaces -------------------------------------------
+
+    async def workspaces(self, *, limit: int = 50) -> dict[str, Any]:
+        """``GET /workspaces``：列出桥接端可见的工作区（契约 §13.1）。
+
+        返回 ``{count, returned, limit, items}``；``items`` 每项是
+        ``{id, path, title, sessionIds}``。这是**只读**调用，不改任何会话。
+        """
+        info = await self._request(
+            "GET", contract.ROUTE_WORKSPACES, params={"limit": int(limit)}
+        )
+        return self._ensure_ok(info, "工作区列表")
+
+    # ---- §13.2 /session/rebind ---------------------------------------
+
+    async def rebind(self, *, conversation: str, workspace_id: str) -> dict[str, Any]:
+        """``POST /session/rebind``：把该对话改指到指定工作区（契约 §13.2）。
+
+        语义是**新开一个会话**并把它挂到目标工作区，旧会话不删不摘——
+        它的 cwd 仍旧是原目录，假装它消失了才是说谎。
+        """
+        if not conversation or not workspace_id:
+            raise BridgeError(
+                "conversation 与 workspaceId 都必须是非空字符串",
+                code=contract.ERROR_UNSUPPORTED,
+            )
+        info = await self._request(
+            "POST",
+            contract.ROUTE_REBIND,
+            body={"conversation": conversation, "workspaceId": workspace_id},
+        )
+        return self._ensure_ok(info, "改指")
 
     # ---- §3.1 /message ----------------------------------------------
 
@@ -643,6 +710,22 @@ class Main(Star):
             event.stop_event()
             return
 
+        # 工作区：只读清单，不投给 agent。
+        if head == contract.COMMAND_WORKSPACES:
+            async for result in self._handle_workspaces_command(event):
+                yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
+        # 改指工作区：改的是桥接端状态，正文不是对话内容，不能投给 agent。
+        if head == contract.COMMAND_REBIND:
+            async for result in self._handle_rebind_command(event, command):
+                yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
         # 审批回执走独立分支：它不是对话内容，不能投给 agent。
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
@@ -918,6 +1001,103 @@ class Main(Star):
 
         yield event.plain_result("\n".join(lines))
 
+    async def _handle_workspaces_command(
+        self, event: AstrMessageEvent
+    ) -> AsyncIterator[Any]:
+        """``/dsh workspaces`` —— 列出桥接端登记的工作区（契约 §13.1）。
+
+        与 ``where`` 同一取舍：**本地那行永远打印**。想换工作区时最需要的
+        信息（当前会话键）本来就在本地，不该被一次网络往返的失败拖没。
+        """
+        lines = [
+            f"会话键：{event.unified_msg_origin}",
+            "星驿 · 桥接端工作区：",
+        ]
+        try:
+            info = await self._transport_or_create().workspaces()
+        except Exception as exc:  # noqa: BLE001 - 列表失败不应影响插件
+            logger.warning(f"[dsh_relay] 工作区列表查询失败：{exc}")
+            lines.append(f"· 查询失败：{exc}")
+        else:
+            items = info.get("items")
+            if items is None:
+                # 契约 §13.1 的成功体里一定有 items。缺了说明两侧版本对不上，
+                # 这跟「登记了 0 个工作区」是两回事，不能用同一句提示糊过去。
+                lines.append("· 桥接端没有给出工作区清单（两侧版本可能不一致）。")
+            elif not isinstance(items, list):
+                lines.append(f"· 工作区清单格式异常：{type(items).__name__}。")
+            elif not items:
+                lines.append("· 桥接端当前没有登记任何工作区。")
+            else:
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title") or "").strip() or "（无标题）"
+                    path = str(item.get("path") or "").strip() or "（路径缺失）"
+                    lines.append(f"· {title}")
+                    lines.append(f"    id={item.get('id') or ''}　{path}")
+                # count 是登记总数、returned 是本次给出的条数（桥接端默认截到 50）。
+                # 只报 returned 会把「被截断」显示成「就这么多」，用户会以为
+                # 目标工作区没登记，转头去查一个不存在的问题。
+                shown = info.get("returned")
+                shown = shown if isinstance(shown, int) else len(items)
+                total = info.get("count")
+                tail = (
+                    f"共 {total} 个，这里列出 {shown} 个"
+                    if isinstance(total, int) and total > shown
+                    else f"共 {shown} 个"
+                )
+                lines.append(
+                    f"　{tail}；"
+                    f"用「{contract.COMMAND_REBIND} <id>」把本对话改指过去。"
+                )
+
+        yield event.plain_result("\n".join(lines))
+
+    async def _handle_rebind_command(
+        self, event: AstrMessageEvent, command: str
+    ) -> AsyncIterator[Any]:
+        """``/dsh rebind <workspaceId>`` —— 把本对话改指到指定工作区（契约 §13.2）。"""
+        parts = command.split()
+        if len(parts) < 2 or not parts[1].strip():
+            yield event.plain_result(
+                f"用法：{parts[0]} <工作区 id>（先用 "
+                f"{contract.COMMAND_WORKSPACES} 查看可用 id）"
+            )
+            return
+        workspace_id = parts[1].strip()
+
+        try:
+            info = await self._transport_or_create().rebind(
+                conversation=event.unified_msg_origin,
+                workspace_id=workspace_id,
+            )
+        except BridgeError as exc:
+            if exc.status == 404:
+                # 未知工作区：不是错误，是「你敲的 id 不在清单里」
+                yield event.plain_result(
+                    f"桥接端没有这个工作区：{workspace_id}。"
+                    f"用 {contract.COMMAND_WORKSPACES} 看看有哪些。"
+                )
+            elif exc.status == 409:
+                yield event.plain_result("本对话还有任务在跑或正在投递，等这一步结束再改指。")
+            else:
+                yield event.plain_result(_prefixed_failure("改指失败", exc))
+        except Exception as exc:  # noqa: BLE001 - 网络类失败同样只提示
+            logger.warning(f"[dsh_relay] 改指失败：{exc}")
+            yield event.plain_result(_prefixed_failure("改指失败", exc))
+        else:
+            previous = info.get("previousSessionId") or "（无）"
+            lines = [
+                "已改指到新工作区：",
+                f"· 工作区　{workspace_id}",
+                f"· 目录　　{info.get('cwd') or '（未知）'}",
+                f"· 新会话　{info.get('sessionId') or '（未知）'}",
+                f"· 旧会话　{previous}（保留，不删）",
+                "下一条消息会投给新会话。",
+            ]
+            yield event.plain_result("\n".join(lines))
+
     async def _handle_approval_command(
         self, event: AstrMessageEvent, command: str
     ) -> AsyncIterator[Any]:
@@ -1112,6 +1292,14 @@ def _usage_text(base: str) -> str:
         (
             f"{base} {contract.COMMAND_WHERE}",
             "定位本对话的工作区与 DSH 会话（只读，不投给 agent）",
+        ),
+        (
+            f"{base} {contract.COMMAND_WORKSPACES}",
+            "列出桥接端登记的工作区（只读，不投给 agent）",
+        ),
+        (
+            f"{base} {contract.COMMAND_REBIND} <工作区 id>",
+            "把本对话改指到指定工作区（新开一个会话，旧的不删）",
         ),
         (
             f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",

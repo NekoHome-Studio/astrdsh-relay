@@ -8,8 +8,14 @@
  */
 import { randomUUID } from 'node:crypto'
 
-/** 契约版本。破坏性变更必须递增；/health 会返回它，IM 侧不匹配时拒绝启用。 */
-export const BRIDGE_VERSION = '1'
+/**
+ * 契约版本。破坏性变更必须递增；/health 会返回它，IM 侧不匹配时拒绝启用。
+ *
+ * v2：新增 `GET /workspaces` 与 `POST /session/rebind`（契约 §13）。
+ *     对 v1 客户端而言是**增量**，但版本号仍递增——两侧的常量表是逐字对应的，
+ *     让版本号忠实记录「这份常量表是哪一版」，比让客户端去猜差异更省事。
+ */
+export const BRIDGE_VERSION = '2'
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({
@@ -19,6 +25,8 @@ export const ROUTES = Object.freeze({
   HEALTH: '/health',                // GET   存活与版本协商
   WHERE: '/where',                  // GET   定位：某对话 → 工作区 / DSH 会话（契约 §12）
   CONVERSATIONS: '/conversations',  // GET   列出已知的对话映射（契约 §12）
+  WORKSPACES: '/workspaces',        // GET   列出宿主已登记的工作区（契约 §13.1）
+  REBIND: '/session/rebind',        // POST  把某 IM 对话改指到指定工作区（契约 §13.2）
 })
 
 /** 下行事件类型。契约 §4。 */

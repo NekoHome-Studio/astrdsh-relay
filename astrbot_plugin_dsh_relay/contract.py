@@ -8,7 +8,11 @@
 from __future__ import annotations
 
 #: 契约版本。破坏性变更必须递增；/health 返回它，不匹配时拒绝启用。
-BRIDGE_VERSION = "1"
+#:
+#: v2：新增 ``GET /workspaces`` 与 ``POST /session/rebind``（契约 §13）。
+#:     对 v1 客户端而言是**增量**，但版本号仍递增——两侧的常量表是逐字对应的，
+#:     让版本号忠实记录「这份常量表是哪一版」，比让客户端去猜差异更省事。
+BRIDGE_VERSION = "2"
 
 #: 路由。契约 §3。相对 AstrBot 侧配置项 ``bridge_url``。
 ROUTE_MESSAGE = "/message"
@@ -18,6 +22,10 @@ ROUTE_HEALTH = "/health"
 #: 定位（契约 §12）：某对话 → 工作区 / DSH 会话。
 ROUTE_WHERE = "/where"
 ROUTE_CONVERSATIONS = "/conversations"
+#: 列出宿主已登记的工作区（契约 §13.1）。
+ROUTE_WORKSPACES = "/workspaces"
+#: 把某 IM 对话改指到指定工作区（契约 §13.2）。
+ROUTE_REBIND = "/session/rebind"
 
 #: 下行事件类型。契约 §4。
 EVENT_TURN_START = "turn/start"
@@ -81,3 +89,9 @@ COMMAND_WHERE = "where"
 #: 它与「裸前缀」共用同一份清单（`main._usage_text`），因此不存在"文档里有、
 #: 敲下去没反应"的分叉。
 COMMAND_HELP = "help"
+
+#: 列出工作区的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词。
+COMMAND_WORKSPACES = "workspaces"
+
+#: 改指工作区的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词。
+COMMAND_REBIND = "rebind"

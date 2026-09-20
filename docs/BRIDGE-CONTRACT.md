@@ -170,7 +170,7 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "1",
+  "bridgeVersion": "2",
   "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
   "conversations": 3
@@ -355,7 +355,7 @@ DSH 内 agent 触发敏感工具
 | `unauthorized` | 401 | token 缺失/错误 | 不重试，明确报错到日志，桥接置为不可用 |
 | `not_found` | 404 | conversation 无映射（且 policy 不允许自动建） | 提示用户先触发一次会话建立 |
 | `queue_full` | 429 | 队列满 | 回「排队中」，不重试 |
-| `agent_busy` | 409 | 同 conversation 已有在途 turn 且策略不允许排队 | 提示「正在处理上一条」 |
+| `agent_busy` | 409 | 同 conversation 已有在途 turn；或改指时目录不可用、挂载失败（§13.2） | 提示「正在处理上一条」；环境故障则提示稍后再试 |
 | `unsupported` | 400 | 未知 `type` / 不支持的字段组合 | 记日志，回执给用户 |
 | `not_implemented` | 501 | 请求**合法**，但网桥这一端还没实现（骨架端点） | 不回重试，直接告诉用户「该功能尚未实现」，并在桥接问题清单里留痕 |
 | `internal` | 500 | DSH 内部错误 | 可重试一次，然后向用户报错 |
@@ -387,10 +387,19 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "1"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "2"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
+- **v1 → v2 是刻意的例外。** §13 新增的两条路由对 v1 客户端而言确实是增量
+  （它不会去调，也就不会看见），按上面那条本可不动版本号。这里仍然递增，
+  理由是版本号的**职责**：它标记的是「这份常量表是哪一版」，而不是
+  「老客户端会不会坏」。两侧常量表是逐字对应的副本（`lib/contract.js` /
+  `contract.py`），让版本号忠实地记录常量表版本，比让读日志的人去猜
+  「为什么都是 v1、能力却不一样」更省事。
+- 这个选择的代价要写明白：**v1 与 v2 不能混合部署**。桥接端升到 v2 后，
+  仍是 v1 的 IM 侧会在启动校验时**拒绝启用**（§3.4），因此升级必须两侧同时
+  发布，**不存在灰度窗口**；回滚同理。
 
 ---
 
@@ -587,3 +596,147 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
 `sessionTitleTemplate` 这类本机部署信息，裸奔等于把这些细节送给任何能连到端口的人。
 `/health` 的定位诊断字段：`pathPrefix`、`cwd`、`statePath`、`stateExisted`、
 `policy`、`sessionTitleTemplate`、`conversations`（映射条数）。
+
+---
+
+## 13. 工作区改指（v2 新增）
+
+`/dsh workspaces` 与 `/dsh rebind <id>` 对应的两条路由。设计口径与 §12 一致：**能力交给
+DSH 既有语义**（`sessionController.create({ workspaceId })` 建会话 + `workspace.attachSession()`
+挂载），桥接端只做「查清单」与「换映射」，不自己重造一套工作区概念。
+
+### 13.1 `GET /workspaces?limit=N`
+
+列出宿主 `workspaceRegistry` 里已登记的工作区，供 IM 侧挑「改指」的目标。
+
+```jsonc
+{
+  "count": 3, "returned": 3, "limit": 50,
+  "items": [
+    { "id": "ws-...", "path": "D:\\AI\\workspace", "title": "默认", "sessionIds": ["..."] }
+  ]
+}
+```
+
+硬要求：
+
+1. **`count` 是总数，`returned` 是本页条数。** 没截断时两者相等，正是这点让写错的一方长期
+   不显形。IM 侧要提示总数（如「共 N 个」）必须用 `count`；用 `returned` 会在工作区超过
+   `limit` 时说少话，而用户按这个数「找第 N 个」时会得到「桥接端没有这个工作区」。
+2. **不静默返回空清单。** 注册表缺席或 `list()` 抛错一律 `500` + `internal`。
+   「没有登记任何工作区」与「问不到工作区」对 IM 侧是完全不同的两件事：前者用户该去 DSH 里
+   建一个，后者用户该去查桥接端状态。合并成一句空清单，会让人按错误的方向排查半天。
+3. `limit` 默认 50、上限 200，超出即**钳制**（不报错），返回体带实际生效的 `limit`；读法与
+   §12.2 逐字一致——两个列表端点若在截断口径上分叉，就成了只能靠人记住的差异。
+4. **只暴露公开读取面**：`id` / `path` / `title` / `sessionIds`。实体内部私有记录属官方实现
+   细节，抄进来等于给自己埋一个「升级即断」的点。
+
+IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sessionIds` 是宿主的
+内部账，IM 侧**不解释、不校验、不依赖**。新增字段照 §10 前向兼容。
+
+> 安全面提醒：本端点向任何持 token 者暴露宿主**绝对路径**、标题与全部 `sessionIds`
+> （含并非本插件创建的会话），暴露面比 §12.1 的 `/where` 更大。§5.3 的威胁模型须按这一条
+> 重新审视；token 的持有面就是本端点的信任边界。
+
+### 13.2 `POST /session/rebind`
+
+把某个 IM 对话**改指**到另一个工作区：为它新建一个落在目标目录的 DSH 会话，再把映射换过去。
+
+请求（本版无 `Idempotency-Key`，见 §13.3 第 3 条）：
+
+```jsonc
+{ "conversation": "default:GroupMessage:1000000001", "workspaceId": "ws-..." }
+```
+
+响应 `200`：
+
+```jsonc
+{
+  "ok": true,
+  "conversation": "default:GroupMessage:1000000001",
+  "workspaceId": "ws-...",
+  "sessionId": "im-3f9a1c7e-...",
+  "cwd": "D:\\AI\\workspace",
+  "previousSessionId": "im-9b2d..."
+}
+```
+
+**为什么必须换会话 id、不能就地改 cwd**：会话头里的 `cwd` 在创建时定死，官方唯一允许的
+路径是「建会话 → `attachSession`」，而 `attachSession` 要求
+`readSessionHeader(sessionId).cwd === record.path`——没有任何一条路能改已存在的会话。
+建会话与挂载的顺序照抄官方 `sessionController.create`
+（`dsh-api-session-controller/lib/index.js:548-600`）：`workspaceId` 与 `cwd` 互斥 → 查注册表
+→ 先 `create` → 成功后再 `attachSession`。
+
+**旧会话不删也不摘。** 它的 `cwd` 仍是原目录，从原工作区里摘掉它才是说谎（官方
+`attachSession` 的四条校验正是按 cwd 认账的）。`previousSessionId` 回显出来，就是为了让用户
+还找得回去。改指后 `state.json` 记录里只有新的 `dshSessionId` 与 `cwd`；`workspaceId`
+**不落盘**（§12.5.1），因此 `/where` 的 `source` 仍是 `conversation`。
+
+错误判定顺序（**先存在性、后忙**，实现须按此序）：
+
+| 序 | 条件 | 状态 | code |
+|---|---|---|---|
+| 1 | `conversation` / `workspaceId` 缺失或不是非空字符串 | 400 | `unsupported` |
+| 2 | 注册表不可用（宿主未提供 `get()`） | 500 | `internal` |
+| 3 | `workspaceId` 不在清单里 | 404 | `not_found` |
+| 4 | 目标目录不可用（登记项 `status() !== "ok"`） | 409 | `agent_busy` |
+| 5 | 本对话有在途投递或任务在跑 | 409 | `agent_busy` |
+| 6 | 建会话失败（`agents.create` 抛错，新会话尚未落盘） | 500 | `internal` |
+| 7 | 会话已建、挂到工作区失败（`attachSession` 抛错） | 409 | `agent_busy` |
+| 8 | 其余 | 500 | `internal` |
+
+> **第 4、7 行收口到 `409`，不回 `400`**（本版实现即如此）。口径与 §8 一致：目录不可用
+> 与挂载失败都是**服务端侧的环境故障**，回 `400` 会被 IM 侧判成不可重试（`_unpack` 只看
+> 状态码就置 `retryable=False`），可恢复的故障于是永远不会被重试。
+>
+> **没有新增 `503`** 是权衡结果：`ERROR_STATUS` 表里 `409` 只挂着 `agent_busy` 一个码，
+> 新增 `503` 要同改两侧常量、本契约与 parity 白名单，而 IM 侧对 `409` 的动作（提示用户
+> 稍后再试）本来就正确——为一次环境故障扩一条状态码，收益不抵成本。
+>
+> 两行的 `details` 也一并给定：第 4 行带 `{conversation, workspaceId, status}`（`status` 是
+> 登记项自报的目录状态）；第 7 行带 `{conversation, workspaceId, sessionId, cwd,
+> orphaned: true, released}`——`sessionId` 是**新会话**的 id，`orphaned` 恒为 `true`，
+> `released` 记录 `handle.dispose()` 是否成功。**孤儿会话必须回报**：`create` 成功即已落盘，
+> 悄悄吞掉 `sessionId` 会让用户以为那个会话不存在，而它在宿主账本里确实存在。
+
+- **`404` 与两个 `409` 的先后是有意的**：`id` 敲错、同时又有任务在跑时，只会得到 `404`。
+  先答「你敲的 id 不存在」比先答「正忙、待会儿再试」有用得多。
+- 路由按 **path 精确匹配**，两条新端点都不校验 HTTP 方法：`GET /session/rebind` 会走字段
+  校验回 `400`，而不是 `405`。契约**未定义**方法不匹配的行为，实现方不要依赖它。
+
+### 13.3 幂等、保活与状态一致性
+
+1. **SSE 保活**：改指期间既有的 `/events` 流**不中断**，心跳照常；IM 侧不因一次改指而重连。
+   改指要花掉一次建会话的时间，心跳是「另一端还活着」的唯一证据。
+2. **与在途 turn 的并发**：竞争时以 `409 agent_busy` 优雅降级——不抢占、不打断正在生成的
+   回答。`bridge.attaching || queue > 0` 的检查与置位之间没有 `await`，因而原子；
+   所有早退分支都在置位之前，`finally` 里统一释放 `attaching`。
+3. **本版没有幂等键**：`/session/rebind` 没有 `Idempotency-Key` 保护（§5.3 的威胁模型目前
+   只覆盖 `/message` 与 `/approval`）。后果是：超时或响应丢失时服务端可能**已经成功**，
+   客户端却报「改指失败」，重试会再建一个会话、留下孤儿。在补上幂等键之前，客户端的重试
+   要求是：**先 `GET /where` 对账，再决定是否重试**。
+4. **`persistRecords()` 失败只 warn，不改变响应**。后果比 `/message` 侧同类问题更重：内存
+   已换新会话、磁盘仍是旧的，重启后映射回退，而旧 agent 已经拆了——「改指成功」在重启后
+   不成立。本版如实记为**已知缺口**：将来要么在响应里带 `persisted:false`，要么让持久化
+   失败直接回 `500`。
+5. **改指到「当前已经是」的工作区**：本版**没有 no-op 检测**（不比较当前工作区），会静默
+   轮换 `sessionId` 并丢上下文，而用户以为无事发生。将来应在服务端做 no-op（回原
+   `sessionId`）或回 `409`。
+
+### 13.4 IM 侧指令
+
+| 指令 | 行为 |
+|---|---|
+| `/dsh workspaces` | 调 §13.1，打印清单与「共 N 个」（用 `count`） |
+| `/dsh rebind <工作区 id>` | 调 §13.2，把本对话改指过去 |
+
+两条都属「只读/一次性」，正文不是对话内容，因此与 §12 的 `where` 同规格：接管本事件、
+禁止默认 LLM（`should_call_llm(True)` + `stop_event()`，且 `yield` 必须在 `stop_event`
+之前）。本地那行（会话键）**永远先打印**，清单查询失败也不影响它——想换工作区时最需要的
+信息本来就在本地。
+
+**服务端给出的 `message` 已是完整句子**（含「改指失败：」前缀），IM 侧**不得**再拼一次
+前缀，否则用户会看到「改指失败：改指失败：…（internal）」。同理，`200` 响应体里的 `ok`
+也要看：§11.1 已确立「`200` + `{ok:false,error}`」这一表达法，只看 HTTP 状态码会把将来
+用该表达法报出的失败当成成功。

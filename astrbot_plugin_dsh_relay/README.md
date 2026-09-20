@@ -17,8 +17,8 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 
 ## 当前状态
 
-**是可运行实现。** `BridgeTransport` 的六个方法（`health` / `where` / `send_message` /
-`events` / `send_approval` / `aclose`）全部落地，无 `NotImplementedError`。
+**是可运行实现。** `BridgeTransport` 的八个方法（`health` / `where` / `workspaces` /
+`rebind` / `send_message` / `events` / `send_approval` / `aclose`）全部落地，无 `NotImplementedError`。
 
 | 部位 | 状态 |
 |---|---|
@@ -30,7 +30,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 契约常量（`contract.py`） | ✅ 就位 |
 | `/dsh where` 定位命令 + 本地信息（会话键/桥接地址） | ✅ 就位 |
 | 定位结果排版（`location_text.py`） | ✅ 就位（有单测） |
-| HTTP + SSE 传输层（`BridgeTransport` 六方法） | ✅ 就位 |
+| HTTP + SSE 传输层（`BridgeTransport` 八方法） | ✅ 就位 |
 | 流式节流回帖、幂等键复用、重试退避 | ✅ 就位 |
 | 主动推送 `push_to_session` | ✅ 就位 |
 | `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |
@@ -57,19 +57,26 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | `dsh where` | 定位本对话的工作区与 DSH 会话。设计取舍见下 |
 | `dsh approve <验证码>` | 允许**一次**待审批操作（一次性回执，不接受「是/否」这类转述） |
 | `dsh reject <验证码>` | 拒绝待审批操作 |
+| `dsh workspaces` | 列出宿主登记的工作区（id / 路径 / 标题），供 `rebind` 挑目标 |
+| `dsh rebind <工作区 id>` | 把本对话**改指**到指定工作区：新建落在目标目录的会话并换掉映射，旧会话保留 |
 
 （上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
 
-**指令面刻意只有五条**（v0.4.0 收口口径）：`session` / `workspaces` / `settings`
-这一类**不在本版**。理由是它们全都属于宿主的既有语义，插件侧重造只会造出第二套真相：
+**指令面这七条**（v0.5.0 口径）：`<内容>` / `help` / `where` / `approve` / `reject` /
+`workspaces` / `rebind`。后两条是 v0.5.0 新增的**宿主既有语义的薄封装**，不是新造的
+第二套真相；`session`（切换 / 分叉）与 `settings` 这一类**仍不在本版**：
 
-- 换工作区 = `sessionController.create` 自带的 `workspaceId` 参数，不是新命令；
-- 对话中分叉 = `sessionController.fork({ sessionId, atSeq })`，`atSeq` 省略即最后一整轮；
-- 工作区清单 = `workspaceRegistry.list()`，它**没有 RPC 端点**，只有进程内可取。
+- 换工作区（`rebind`）= 宿主自己的 `workspaceId` 建会话路径，插件不做「就地改 cwd」
+  那种改法（会话头里的 cwd 创建时定死），也**不摘旧会话**——它的目录没变，摘掉才是说谎；
+- 工作区清单（`workspaces`）= 宿主 `workspaceRegistry.list()`，它**没有 RPC 端点**，
+  只有进程内可取，由 `GET /workspaces` 这一个只读端点透出；
+- 对话中分叉 = `sessionController.fork({ sessionId, atSeq })`，`atSeq` 省略即最后一整轮，
+  **仍未开**。
 
-桥接插件在 `inject` 里加上 `sessionController` / `workspaceController` 即可进程内直调，
-不必过 HTTP；RPC 面 404 ≠ 能力不存在。真要开这些入口时，清单必须回填进
-`main._usage_text`（唯一来源），否则 §2.5 那类漂移会原样复发。
+桥接端在 `inject` 里拿到了 `workspaceRegistry`，清单与改指都是**进程内直调**再各由
+一个端点透出（`GET /workspaces` / `POST /session/rebind`）；RPC 面 404 ≠ 能力不存在。
+指令清单的唯一来源仍是 `main._usage_text`，**新增子命令必须同时回填那里**，
+否则 §2.5 那类漂移会原样复发。
 
 四条约束：
 
@@ -93,7 +100,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.4.1.zip -DestinationPath <AstrBot>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.5.0.zip -DestinationPath <AstrBot>\data\plugins\
 ```
 
 在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：
