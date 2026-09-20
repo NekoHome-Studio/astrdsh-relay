@@ -59,19 +59,21 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | `dsh reject <验证码>` | 拒绝待审批操作 |
 | `dsh workspaces` | 列出宿主登记的工作区（id / 路径 / 标题），供 `rebind` 挑目标 |
 | `dsh rebind <工作区 id>` | 把本对话**改指**到指定工作区：新建落在目标目录的会话并换掉映射，旧会话保留 |
+| `dsh fork [轮次序号]` | 把本对话**已完成的轮次前缀**复制成新会话：旧会话完全只读，新会话继承到那一轮为止，省略轮次序号即最后一整轮 |
 
 （上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
 
-**指令面这七条**（v0.5.0 口径）：`<内容>` / `help` / `where` / `approve` / `reject` /
-`workspaces` / `rebind`。后两条是 v0.5.0 新增的**宿主既有语义的薄封装**，不是新造的
-第二套真相；`session`（切换 / 分叉）与 `settings` 这一类**仍不在本版**：
+**指令面这八条**（v0.6.0 口径）：`<内容>` / `help` / `where` / `approve` / `reject` /
+`workspaces` / `rebind` / `fork`。后三条是 v0.5.0–v0.6.0 新增的**宿主既有语义的薄封装**，
+不是新造的第二套真相；`session`（切换）与 `settings` 这一类**仍不在本版**：
 
 - 换工作区（`rebind`）= 宿主自己的 `workspaceId` 建会话路径，插件不做「就地改 cwd」
   那种改法（会话头里的 cwd 创建时定死），也**不摘旧会话**——它的目录没变，摘掉才是说谎；
 - 工作区清单（`workspaces`）= 宿主 `workspaceRegistry.list()`，它**没有 RPC 端点**，
   只有进程内可取，由 `GET /workspaces` 这一个只读端点透出；
-- 对话中分叉 = `sessionController.fork({ sessionId, atSeq })`，`atSeq` 省略即最后一整轮，
-  **仍未开**。
+- 对话中分支（`fork`）= 宿主 `sessionController.fork({ sessionId, atSeq })` 的薄封装，
+  `atSeq` 省略即最后一整轮，**已随 v0.6.0 落地**（`POST /session/fork`）；
+  子会话不进 records、不建 bridge，`create` 一返回即 `dispose()`，源会话全程只读。
 
 桥接端在 `inject` 里拿到了 `workspaceRegistry`，清单与改指都是**进程内直调**再各由
 一个端点透出（`GET /workspaces` / `POST /session/rebind`）；RPC 面 404 ≠ 能力不存在。
@@ -100,7 +102,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.5.0.zip -DestinationPath <AstrBot>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.6.0.zip -DestinationPath <AstrBot>\data\plugins\
 ```
 
 在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：

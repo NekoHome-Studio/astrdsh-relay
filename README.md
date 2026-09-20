@@ -81,14 +81,15 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 | `/dsh where` | 定位本对话的工作区与 DSH 会话（只读，不投给 agent） |
 | `/dsh workspaces` | 列出桥接端登记的工作区（只读，不投给 agent） |
 | `/dsh rebind <工作区 id>` | 把本对话改指到指定工作区（新开会话，旧的不删） |
+| `/dsh fork [轮次序号]` | 把本对话已完成的轮次前缀复制成新会话（旧的不动） |
 | `/dsh approve <验证码>` | 允许一次待审批操作 |
 | `/dsh reject <验证码>` | 拒绝待审批操作 |
 
-指令面**刻意只有这七条**（v0.5.0 口径）：`workspaces`（列工作区）与 `rebind`（改指）
-已在 v0.5.0 落地；`session`（切换 / 分叉）与 `settings` 这类入口**仍不在本版**，
-也不在插件侧自行重造——宿主已有既有语义（换工作区是 `sessionController.create` 的
-`workspaceId` 参数 + `workspace.attachSession`，分叉是 `sessionController.fork` 的
-`atSeq`），要用就直接进程内调，不另立一套。
+指令面**刻意只有这八条**（v0.6.0 口径）：`workspaces`（列工作区）与 `rebind`（改指）
+随 v0.5.0 落地，`fork`（分支）随 v0.6.0 落地；`session`（切换）与 `settings` 这类入口
+**仍不在本版**，也不在插件侧自行重造——宿主已有既有语义（换工作区是
+`sessionController.create` 的 `workspaceId` 参数 + `workspace.attachSession`，分支是
+`sessionController.fork` 的 `atSeq`），要用就直接进程内调，不另立一套。
 
 ## 三个决定性结论（都改变了原始设计）
 

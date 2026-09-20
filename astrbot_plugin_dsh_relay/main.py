@@ -357,6 +357,44 @@ class BridgeTransport:
         )
         return self._ensure_ok(info, "改指")
 
+    # ---- §14 /session/fork -------------------------------------------
+
+    async def fork(
+        self, *, conversation: str, at_seq: int | None = None
+    ) -> dict[str, Any]:
+        """``POST /session/fork``：把本对话已完成的某一轮之前缀复制成新会话（契约 §14）。
+
+        语义是**复制**，不是"切走"：源会话一条事件都不动，新会话只是「已建好并落
+        了档」，要认领它得另发 ``/message``（或另做一次改指）。
+
+        IM 侧手里只有会话键（UMO），而 §14.1 要的是 DSH 会话 id，所以先走一次
+        ``/where`` 取 ``sessionId``：**不新开路由**，也不在 IM 侧拼会话 id。
+        """
+        if not conversation:
+            raise BridgeError(
+                "conversation 必须是非空字符串", code=contract.ERROR_UNSUPPORTED
+            )
+        if at_seq is not None and (
+            isinstance(at_seq, bool) or not isinstance(at_seq, int) or at_seq < 0
+        ):
+            raise BridgeError("atSeq 必须是非负整数", code=contract.ERROR_UNSUPPORTED)
+
+        location = await self.where(conversation=conversation)
+        session_id = location.get("sessionId")
+        if not isinstance(session_id, str) or not session_id.strip():
+            # 「本对话还没和 DSH 会话建立映射」不是桥接端出错：没有会话，
+            # 就没有可供复制的轮次前缀。契约 §12.1 允许 ``sessionId`` 为 null。
+            raise BridgeError(
+                "本对话还没有 DSH 会话，先发一条消息建立起映射再分支",
+                code=contract.ERROR_NOT_FOUND,
+            )
+
+        body: dict[str, Any] = {"sessionId": session_id.strip()}
+        if at_seq is not None:
+            body["atSeq"] = at_seq
+        info = await self._request("POST", contract.ROUTE_FORK, body=body)
+        return self._ensure_ok(info, "分支")
+
     # ---- §3.1 /message ----------------------------------------------
 
     @staticmethod
@@ -726,6 +764,14 @@ class Main(Star):
             event.stop_event()
             return
 
+        # 分支对话：改的是桥接端状态，正文不是对话内容，不能投给 agent。
+        if head == contract.COMMAND_FORK:
+            async for result in self._handle_fork_command(event, command):
+                yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
         # 审批回执走独立分支：它不是对话内容，不能投给 agent。
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
@@ -797,7 +843,7 @@ class Main(Star):
                     return
                 except Exception as exc:  # noqa: BLE001 - 单条消息失败不得影响插件
                     logger.warning(f"[dsh_relay] 投递失败：{exc}")
-                    yield event.plain_result(f"桥接调用失败：{exc}")
+                    yield event.plain_result(_prefixed_failure("投递失败", exc))
                     return
 
                 if reply.get("duplicate"):
@@ -1098,6 +1144,75 @@ class Main(Star):
             ]
             yield event.plain_result("\n".join(lines))
 
+    async def _handle_fork_command(
+        self, event: AstrMessageEvent, command: str
+    ) -> AsyncIterator[Any]:
+        """``/dsh fork [atSeq]`` —— 把本对话某个已完成轮次的前缀复制成新会话（契约 §14）。
+
+        分支是**复制**：源会话一条事件不动，新会话只是「已建好、落了档、还没被接管」。
+        所以要继续聊得另行接管它，本对话的映射不会因此改变。
+        """
+        parts = command.split()
+        at_seq: int | None = None
+        if len(parts) >= 2 and parts[1].strip():
+            text = parts[1].strip()
+            # 只认十进制非负整数：``-1``/``1.5``/``1e3`` 在这里就该被挡住，
+            # 而不是丢给桥接端去猜（契约 §14.1 要的是非负安全整数）。
+            if not text.isdigit():
+                yield event.plain_result(
+                    f"轮次序号必须是非负整数：{text}。"
+                    f"用法：{parts[0]} [轮次序号]（省略就取最后一轮已完成的边界）"
+                )
+                return
+            at_seq = int(text)
+
+        try:
+            info = await self._transport_or_create().fork(
+                conversation=event.unified_msg_origin,
+                at_seq=at_seq,
+            )
+        except BridgeError as exc:
+            # 本地那层「本对话还没有 DSH 会话」不带 status，只带 error_code，
+            # 所以这里两个条件都要认，否则它会掉进「分支失败」的兜底文案。
+            if exc.status == 404 or exc.code == contract.ERROR_NOT_FOUND:
+                yield event.plain_result(
+                    "本对话还没有 DSH 会话，先发一条消息建立起映射再分支。"
+                )
+            elif exc.status == 409:
+                details = exc.details if isinstance(exc.details, dict) else {}
+                if details.get("orphaned"):
+                    # §14.1：挂载失败是**正常失败路径**，子会话已经回收，源会话没动过
+                    yield event.plain_result(
+                        _prefixed_failure(
+                            "分支失败",
+                            f"{exc}。子会话已释放、不留残留，本对话也没变，可以直接重试。",
+                        )
+                    )
+                else:
+                    yield event.plain_result(
+                        _prefixed_failure(
+                            "分支失败",
+                            f"{exc}。等这一轮跑完，或换一个更早的轮次序号再试。",
+                        )
+                    )
+            else:
+                yield event.plain_result(_prefixed_failure("分支失败", exc))
+        except Exception as exc:  # noqa: BLE001 - 网络类失败同样只提示
+            logger.warning(f"[dsh_relay] 分支失败：{exc}")
+            yield event.plain_result(_prefixed_failure("分支失败", exc))
+        else:
+            inherited = info.get("inheritedEventCount")
+            lines = [
+                "已从本对话分出新的子会话：",
+                f"· 子会话　{info.get('sessionId') or '（未知）'}",
+                f"· 源会话　{info.get('sourceSessionId') or '（未知）'}（保留，一字未动）",
+                f"· 继承事件　{inherited if isinstance(inherited, int) else '（未知）'} 条",
+                f"· 工作区　{info.get('workspaceId') or '（未挂载）'}",
+                f"· 目录　　{info.get('cwd') or '（未知）'}",
+                "子会话已落档、但还没被接管；本对话仍旧指着原来的会话。",
+            ]
+            yield event.plain_result("\n".join(lines))
+
     async def _handle_approval_command(
         self, event: AstrMessageEvent, command: str
     ) -> AsyncIterator[Any]:
@@ -1142,11 +1257,11 @@ class Main(Star):
                 yield event.plain_result("该审批已经被处理过了（已决议或已超时）。")
                 return
             logger.warning(f"[dsh_relay] 审批回执失败：{exc}")
-            yield event.plain_result(f"审批回执失败：{exc}")
+            yield event.plain_result(_prefixed_failure("审批回执失败", exc))
             return
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[dsh_relay] 审批回执失败：{exc}")
-            yield event.plain_result(f"审批回执失败：{exc}")
+            yield event.plain_result(_prefixed_failure("审批回执失败", exc))
             return
 
         self._pending.pop(key, None)
@@ -1199,7 +1314,7 @@ class Main(Star):
             return "桥接鉴权失败：两侧 token 可能不一致。"
         if exc.status == 404:
             return "桥接端没有这个端点：检查 bridge_url 的 pathPrefix。"
-        return f"桥接调用失败：{exc}"
+        return _prefixed_failure("桥接调用失败", exc)
 
     async def push_to_session(self, umo: str, text: str) -> bool:
         """主动推送（不经事件）。
@@ -1300,6 +1415,10 @@ def _usage_text(base: str) -> str:
         (
             f"{base} {contract.COMMAND_REBIND} <工作区 id>",
             "把本对话改指到指定工作区（新开一个会话，旧的不删）",
+        ),
+        (
+            f"{base} {contract.COMMAND_FORK} [轮次序号]",
+            "把本对话已完成的轮次前缀复制成新会话（旧的不动）",
         ),
         (
             f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",

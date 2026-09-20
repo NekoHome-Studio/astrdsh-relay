@@ -1,6 +1,6 @@
-# AstrDsh Relay（星驿）接口契约 v1（草案 / 冻结候选）
+# AstrDsh Relay（星驿）接口契约（草案 / 冻结候选）
 
-> 状态：**设计冻结候选**。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
+> 状态：**设计冻结候选**；当前 `bridgeVersion = "3"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
 > `docs/astrbot-side-capabilities.md`、`docs/dsh-side-capabilities.md`）；
 > 标记 `【未核实】` 的条项**不得**在实现阶段当作既成事实使用。
 >
@@ -170,7 +170,7 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "2",
+  "bridgeVersion": "3",
   "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
   "conversations": 3
@@ -355,7 +355,7 @@ DSH 内 agent 触发敏感工具
 | `unauthorized` | 401 | token 缺失/错误 | 不重试，明确报错到日志，桥接置为不可用 |
 | `not_found` | 404 | conversation 无映射（且 policy 不允许自动建） | 提示用户先触发一次会话建立 |
 | `queue_full` | 429 | 队列满 | 回「排队中」，不重试 |
-| `agent_busy` | 409 | 同 conversation 已有在途 turn；或改指时目录不可用、挂载失败（§13.2） | 提示「正在处理上一条」；环境故障则提示稍后再试 |
+| `agent_busy` | 409 | 同 conversation 已有在途 turn；或改指时目录不可用、挂载失败（§13.2）；或分支时没有可切轮次、子会话挂载失败（§14.1） | 提示「正在处理上一条」；环境故障则提示稍后再试 |
 | `unsupported` | 400 | 未知 `type` / 不支持的字段组合 | 记日志，回执给用户 |
 | `not_implemented` | 501 | 请求**合法**，但网桥这一端还没实现（骨架端点） | 不回重试，直接告诉用户「该功能尚未实现」，并在桥接问题清单里留痕 |
 | `internal` | 500 | DSH 内部错误 | 可重试一次，然后向用户报错 |
@@ -387,7 +387,7 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "2"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "3"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
@@ -400,6 +400,11 @@ DSH 内 agent 触发敏感工具
 - 这个选择的代价要写明白：**v1 与 v2 不能混合部署**。桥接端升到 v2 后，
   仍是 v1 的 IM 侧会在启动校验时**拒绝启用**（§3.4），因此升级必须两侧同时
   发布，**不存在灰度窗口**；回滚同理。
+- **v2 → v3 同理，理由更硬。** §14 新增的 `/session/fork` 对 v2 客户端同样是增量
+  （它不会去调），按「老客户端会不会坏」的口径本可不升。但 §14.2 记录的三处与官方
+  实现的**有意差异**、以及 §14.3「本版无幂等键、重试前必须先对账」这条约束，都是
+  **行为层面**的约定：它们写不进常量表，IM 侧光比对字段看不出来。让版本号指向这一层
+  语义，是它唯一能起作用的地方。代价与上一段相同——**v2 与 v3 不能混合部署**。
 
 ---
 
@@ -465,6 +470,7 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
   `session/list` 的 `projections.asOfSeq`。
 - 进程内直调、`fetch.register` 的 SSE、exact 路由抢占目前**只有静态证据**
   （需装插件并重启 harness 才能实跑）。
+
 ---
 
 ## 12. 定位与来源标注（v1.1 草案）
@@ -740,3 +746,111 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
 前缀，否则用户会看到「改指失败：改指失败：…（internal）」。同理，`200` 响应体里的 `ok`
 也要看：§11.1 已确立「`200` + `{ok:false,error}`」这一表达法，只看 HTTP 状态码会把将来
 用该表达法报出的失败当成成功。
+
+---
+
+## 14. 对话中分支（v3 新增）
+
+`/dsh fork` 对应的路由。设计口径同 §13：**能力交给 DSH 既有语义**——`sessionQuery.observeSession`
+读源会话、`agentLoop.create({ seed })` 建一个带着前缀事件的新会话；桥接端只做两件事：
+**把刀口推到完整轮次边界**、**建会话并（尽力）把它挂到源会话所在的工作区**。
+
+### 14.1 `POST /session/fork`
+
+把某个**已完成轮次**的前缀复制成一个新会话。源会话只读，一条不改。
+
+请求（本版无 `Idempotency-Key`，见 §14.3）：
+
+```jsonc
+{
+  "sessionId": "im-1a2b3c4d",  // 必填，非空字符串
+  "atSeq": 42                  // 可选，非负安全整数；缺省或大于末条 seq 即「最后一个完整轮次」
+}
+```
+
+`atSeq` 的语义逐字照抄官方 `fork`（`dsh-api-session-controller/lib/index.js:652-745`）：
+
+1. 给了 `atSeq`：刀口边界 = **第一个 `seq >= atSeq` 的 `turn/end`**；
+2. 没给 `atSeq`，或 `atSeq` 大于日志末条的 `seq`：边界 = **最后一个 `turn/end`**；
+3. 给了 `atSeq`，但日志还没走到那一轮（或那一轮尚未结束）：**没有边界** → `409`。
+
+**刀口还要往后推。** `boundary.seq + 1` 不能直接当刀口，须再 `while` 推到下一个 `turn/start`
+（或日志末尾）。依据是 `seed` 的校验语义：它必须从 `seq 0` 连续、只含无损 JSON、
+**不得停在未闭合的 turn/step 或悬空 tool call 上**；而 `turn/end + 1` 恰好落在 `agent/`
+或 `step/` 之类的中段事件上，照给会被拒。
+
+200 响应：
+
+```jsonc
+{
+  "ok": true,
+  "sessionId": "im-5e6f7a8b",       // 新会话（子），id 由本端生成
+  "sourceSessionId": "im-1a2b3c4d", // 源会话，原样保留
+  "inheritedEventCount": 137,       // = 刀口位置，复制过去的事件条数
+  "workspaceId": "ws-…",            // 没能挂上去时为 null
+  "cwd": "E:\\0d00\\…"              // 源会话的 cwd；存档头里缺席时为 null
+}
+```
+
+| # | 条件 | 状态 | 错误码 |
+|---|---|---|---|
+| 1 | `sessionId` 缺失/不是非空字符串，或 `atSeq` 不是非负安全整数 | 400 | `unsupported` |
+| 2 | 宿主未提供 `sessionQuery.observeSession` | 500 | `internal` |
+| 3 | 源会话不存在 | 404 | `not_found` |
+| 4 | 读源会话失败（服务缺席、读档失败等） | 500 | `internal` |
+| 5 | 没有可分支的完整轮次 / 那一轮尚未结束 | 409 | `agent_busy` |
+| 6 | 建子会话失败（此时**无残留**：存档只在 `create` 成功后写） | 500 | `internal` |
+| 7 | 子会话已建、挂到工作区失败 | 409 | `agent_busy` |
+| 8 | 其余 | 500 | `internal` |
+
+> **第 5、7 行收口到 `409`**，不回 `400`：口径与 §13.2 第 4、7 行逐字一致——「那一轮还没跑完」
+> 与「挂载失败」都是**现在还不成**，不是请求写错了。回 `400` 会被 IM 侧判成不可重试
+> （`_unpack` 只看状态码就置 `retryable=False`），于是「等一轮跑完再分」就永远重试不了。
+>
+> **`404` 先于两个 `409`** 也是有意的：`sessionId` 敲错、同时那一轮又没跑完时，只会得到 `404`。
+> 先答「你指的会话不存在」比先答「现在还不成」有用得多。
+>
+> **第 7 行的 `details` 带 `orphaned: true` 与 `released`**（`released` 说明子会话 handle 是否
+> 已释放）。子会话的持久化档**不删**（§14.2 第 3 条），
+> 所以它仍可被 `/message` 或 `/dsh rebind` 接管——这行 `409` 不是「白建了」，是「建好了，
+> 但没能一并挂进工作区」。
+
+### 14.2 与官方 `fork` 的三处有意差异
+
+实现逐行对照官方 `ApiSessionController.fork`，有意分叉只有下面三处，且都写进了代码注释。
+
+1. **手搓 `setup`。** 官方 `composeAgent` 是那个类自己的方法；本网桥的注入声明里没有
+   `agentPresets`（与 §13.2 同款处境），因此按 `handleRebind` 的做法自行组装。两项口径与
+   §13.2 保持一致：取**源会话存档里的预设**（投影口径 `projections.values.agentPreset`，
+   缺席时兜底 `header.agentPreset`）；预设服务缺席时**只警告不失败**——分支不该顺手换掉工具行。
+2. **工作区归属只认「直接包含」。** 官方 `forkWorkspace` 只在 `origin === 'subagent'` 时回溯
+   祖先工作区，IM 会话走的是「直接包含」那一条，等价物即
+   `registry.list().find(entry => entry.sessionIds.includes(sessionId))`（`list()` 是**同步**的，
+   `dsh-workspace/lib/index.js:384-390`）。未命中即 `workspaceId: null`，**不算失败**：子会话照样
+   建好，只是不在任何工作区里。挂载抛错则就地收口 `409` 并释放已建的子会话 handle。
+3. **子会话不进 records、也不建 bridge。** 它只是「一个已建好并落了档的新会话」，`create` 一返回
+   就立刻 `dispose()`。`dispose()` 的语义是停 loop、注销 agent、把会话从内存 store 里摘掉，
+   **不删持久化档**（`dsh-agent/lib/types/index.d.ts:136-153`）——所以子会话随后能被 `/message`
+   或 `/dsh rebind` 接管；反过来，把它留在内存里才是错的：没有 bridge 认领它，它只是一条
+   白占位置的 live agent。**何时接管，由 IM 侧决定。**
+
+### 14.3 幂等、保活与状态一致性
+
+1. **SSE 保活**：分支期间既有的 `/events` 流**不中断**，心跳照常；IM 侧不因一次分支而重连。
+2. **本版没有幂等键**：与 §13.3 第 3 条同罪——超时或响应丢失时子会话可能**已经建好**，客户端
+   却报「分支失败」，重试会再建一个。补上幂等键之前，客户端的重试要求同样是**先对账再重试**。
+3. **源会话完全只读**：`observeSession` 只读档并投影，源会话的 id、映射与事件日志一条不动；
+   子会话 id 由 `newSessionId()` 新生成（前缀 `im-`），**不写进 `state.json` 的 records**，
+   因此 `/where` 对源会话的回答在分支前后逐字相同。
+4. **`SessionObservation` 是租约**：出函数前必须 `[Symbol.dispose]()`，否则会 pin 住 prepared
+   缓存条目——所有早退分支都汇到同一个 `finally`。
+
+### 14.4 IM 侧指令
+
+| 指令 | 行为 |
+|---|---|
+| `/dsh fork [atSeq]` | 调 §14.1，把本对话分支出新会话；不带参数即切最后一个完整轮次 |
+
+规格与 §13.4 完全相同：接管本事件、禁止默认 LLM（`should_call_llm(True)` + `stop_event()`，
+且 `yield` 必须在 `stop_event` 之前）。服务端给出的 `message` 已是完整句子，IM 侧**不得**再拼
+前缀；`200` + `{ok:false,…}` 这一表达法同样适用——只看 HTTP 状态码会把用它报出的失败当成功。

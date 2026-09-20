@@ -1,6 +1,6 @@
 {
   "name": "dsh-astrbot-relay",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "description": "AstrDsh Relay (星驿) — IM bridge host plugin for DeepSeek Harness: authenticated HTTP + SSE transport that drives agent sessions on behalf of an IM front-end (e.g. AstrBot).",
