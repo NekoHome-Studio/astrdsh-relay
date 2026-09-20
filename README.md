@@ -12,7 +12,7 @@
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
 > 仅剩三项配置项未实现（`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`），
-> 命中时**加载即失败**，不会静默降级。最新发布：`v0.3.5`。
+> 命中时**加载即失败**，不会静默降级。最新发布：`v0.4.0`。
 
 ## 交付物地图
 
@@ -80,6 +80,11 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 | `/dsh where` | 定位本对话的工作区与 DSH 会话（只读，不投给 agent） |
 | `/dsh approve <验证码>` | 允许一次待审批操作 |
 | `/dsh reject <验证码>` | 拒绝待审批操作 |
+
+指令面**刻意只有这五条**（v0.4.0 口径）：`session`（切换 / 分叉）、`workspaces`、
+`settings` 这类入口**不在本版**，也不在插件侧自行重造——宿主已有既有语义
+（换工作区是 `sessionController.create` 的 `workspaceId` 参数，分叉是
+`sessionController.fork` 的 `atSeq`），要用就直接进程内调，不另立一套。
 
 ## 三个决定性结论（都改变了原始设计）
 

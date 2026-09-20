@@ -60,6 +60,17 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 
 （上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
 
+**指令面刻意只有五条**（v0.4.0 收口口径）：`session` / `workspaces` / `settings`
+这一类**不在本版**。理由是它们全都属于宿主的既有语义，插件侧重造只会造出第二套真相：
+
+- 换工作区 = `sessionController.create` 自带的 `workspaceId` 参数，不是新命令；
+- 对话中分叉 = `sessionController.fork({ sessionId, atSeq })`，`atSeq` 省略即最后一整轮；
+- 工作区清单 = `workspaceRegistry.list()`，它**没有 RPC 端点**，只有进程内可取。
+
+桥接插件在 `inject` 里加上 `sessionController` / `workspaceController` 即可进程内直调，
+不必过 HTTP；RPC 面 404 ≠ 能力不存在。真要开这些入口时，清单必须回填进
+`main._usage_text`（唯一来源），否则 §2.5 那类漂移会原样复发。
+
 四条约束：
 
 - **`approve` / `reject` 不会被当成对话内容投给 agent** —— 它们在前缀分发里就被
@@ -82,7 +93,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 解压进 AstrBot 的插件目录——归档顶层目录就是插件目录名，一步到位：
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.3.5.zip -DestinationPath <AstrBot>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.4.0.zip -DestinationPath <AstrBot>\data\plugins\
 ```
 
 在克隆里开发时直接拷本目录也行（AstrBot 只认 `data/plugins/<目录名>/metadata.yaml`）：

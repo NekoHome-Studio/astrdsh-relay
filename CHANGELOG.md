@@ -1,5 +1,32 @@
 # 更新日志
 
+## v0.4.0 — 2026-09-20
+
+### 变更
+
+- **本版是口径收口版，不含功能改动**。范围最终收敛为一条总口径：**不重造 DSH 的既有语义**。
+  能力面与 v0.3.5 完全一致——AstrBot 侧五条指令（`<内容>` / `help` / `where` /
+  `approve` / `reject`），DSH 侧六个端点，两侧契约 `BRIDGE_VERSION="1"` 不变，
+  没有新增命令、没有改动配置项、没有触碰传输层。
+- 由此明确**不做**的三件事：不在插件侧自造"更换工作区"（宿主是
+  `sessionController.create` 自带的 `workspaceId` 参数）、不重造"对话中分叉"
+  （宿主是 `sessionController.fork({ sessionId, atSeq })`）、不发明工作区清单端点
+  （`workspaceRegistry.list()` 进程内可取，RPC 面无此端点）。将来真要用，
+  桥接端在 `inject` 里加 `sessionController` / `workspaceController` 直调即可，
+  RPC 面返回 404 不等于能力不存在。
+
+### 文档
+
+- `docs/connector-surface.md` §2.5 加 **迁移裁决**：那份「HELP_TEXT 与实现的偏差」
+  只对被替代的 `astrbot_plugin_dsh_connector` v2.0.1 成立，属旧插件自己的自文档债；
+  relay 侧的指令清单只有 `contract.COMMAND_HELP` + `main._usage_text()` 一个生产来源，
+  裸前缀与 `/dsh help` 读同一份文案，**结构上不会长出同类漂移**，故该条不构成迁移工作，
+  只作历史留档。小节末写明复发条件：将来若把 `session` / `workspaces` / `settings`
+  面搬过来，必须沿用同一清单常量，否则漂移会以另一种形式回来。
+- 根 `README.md`、`astrbot_plugin_dsh_relay/README.md`：在指令速查表后写明指令面
+  **刻意只有五条**，并列出上面那三条"宿主已有语义、插件不重造"的对应关系；
+  两条发布安装路径的产物名同步为 `0.4.0`。
+
 ## v0.3.5 — 2026-09-19
 
 ### 修复

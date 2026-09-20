@@ -196,12 +196,28 @@
 6. 空链处理：流式已发过则静默 return（551-553），否则发「（DeepSeek Harness 没有返回可呈现的内容）」（554）。
 7. 文本按 `reply_chunk_size` 分片逐条 `plain_result`（556-560）；图片合并成一条 `chain_result`（561-562）。
 
-### 2.5 HELP_TEXT 与实现的偏差（迁移时需修正的文档债）
+### 2.5 HELP_TEXT 与实现的偏差（旧插件文档债 · 迁移裁决：不构成工作项）
+
+> **v0.4.0 裁决**：以下四条**只对被替代的 `astrbot_plugin_dsh_connector` v2.0.1 成立**，
+> 属它自己的自文档债。relay 侧结构上不会长出同类漂移，因此本条**不构成迁移工作**，
+> 仅作历史留档。裁决依据见本节末「为什么 relay 侧不会复发」。
 
 - `/dsh settings` 在 HELP 中出现**两次**：`<MAIN>:78` 与 `<MAIN>:86`。
 - HELP **未列出**：`session new`、`config clear/unset`、`workspaces create/rename`、`subagents interrupt`、`goal` 的各子动作、`setting unset` 的完整形态、以及全部中文别名。这些在 README 中有部分（`<README>:40-52,62-84`）。
 - HELP 列出 `provider`/`providers` 两种写法（74），实现同时接受二者（498）。
 - 测试仅锁定了 HELP 里两行文本（`<TESTS>:26-30`）。
+
+**为什么 relay 侧不会复发**（三条，均为现行代码事实）：
+
+1. **清单只有一个生产来源**：`contract.COMMAND_HELP` + `main._usage_text()`，
+   裸前缀与 `/dsh help` 两条入口读的是同一份文案（v0.3.5），
+   不存在"HELP 常量与分支各写一遍"的机会——旧插件那两处重复正是这么来的。
+2. **指令面刻意只有五条**（`<内容>` / `help` / `where` / `approve` / `reject`），
+   旧插件那批"HELP 未列出"的子命令面（`session` / `config` / `settings` /
+   `workspaces` / `subagents` / `goal` 与全部中文别名）**不在 relay v0.4.0 内**，
+   于是"清单列了但敲不动"与"敲得动但清单不列"两种漂移都无从产生。
+3. **复发条件已写明**：将来若真把这些入口搬过来（该面涉及宿主 `sessionController` /
+   `workspaceRegistry` 调用），必须沿用同一清单常量，否则本条会以另一种形式回来。
 
 ---
 
