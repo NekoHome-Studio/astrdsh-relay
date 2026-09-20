@@ -9,7 +9,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**P1 + P2 已落地，是可运行实现。** 八个端点全部有真实 handler；仅三项配置项未实现，
+**P1 + P2 已落地，是可运行实现。** 九个端点全部有真实 handler；仅三项配置项未实现，
 命中时 `assertConfigIsUsable` **加载即抛错**，不静默降级。
 
 | 部位 | 状态 |
@@ -39,7 +39,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 指令清单、接管行为（`should_call_llm` / `stop_event`）与过滤顺序见
 [`../astrbot_plugin_dsh_relay/README.md`](../astrbot_plugin_dsh_relay/README.md)；
-本包只负责八个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
+本包只负责九个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
 
 ## 为什么不用现成的 `/api/<method>` RPC 面
 

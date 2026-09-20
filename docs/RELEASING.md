@@ -144,9 +144,9 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 - DSH 侧 `assertConfigIsUsable` 对 `hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、
   `idleTtlMs` **加载即抛错**。三者都是「宁可响亮失败，也不静默降级」。
 - 除此之外，`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
-  `/approval`、`/workspaces`、`/session/rebind` 八个端点全部可用；AstrBot 侧
-  `BridgeTransport` 的 `health` / `where` / `list_workspaces` / `rebind` /
-  `send_message` / `events` / `send_approval` / `aclose` 全部实现。
+  `/approval`、`/workspaces`、`/session/rebind`、`/session/fork` 九个端点全部可用；
+  AstrBot 侧 `BridgeTransport` 的 `health` / `where` / `list_workspaces` / `rebind` /
+  `fork` / `send_message` / `events` / `send_approval` / `aclose` 全部实现。
 
 自动生成的 `RELEASE_NOTES.md` 会在开头显式声明“已实现 / 未实现(加载即失败)”。
 **这三项做完之前不要移除该声明。**
