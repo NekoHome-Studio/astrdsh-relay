@@ -13,7 +13,7 @@
  * 产物：
  *   dist/dsh-astrbot-relay-<version>.tgz        DSH 侧 host 插件（npm pack）
  *   dist/astrbot_plugin_dsh_relay-<version>.zip AstrBot 侧 Star 插件
- *   dist/SHA256SUMS                             上面两者的校验和
+ *   dist/SHA256SUMS                             上面两者的校验和（跨平台可复现）
  *   dist/RELEASE_NOTES.md                       发版说明（由本脚本生成）
  *
  * 为什么 DSH 侧发 .tgz 而不是让大家从 git 装：
@@ -25,8 +25,10 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
-  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
+  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs'
+import { deflateRawSync } from 'node:zlib'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -37,6 +39,17 @@ const ASTRBOT_PKG_NAME = 'astrbot_plugin_dsh_relay'
 const DIST = join(ROOT, 'dist')
 const STAGING = join(DIST, '_staging')
 const REPO = 'NekoHome-Studio/astrdsh-relay'
+
+/** CRC-32 查找表，模块加载时一次性建好（256 项）。 */
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256)
+  for (let n = 0; n < 256; n += 1) {
+    let c = n
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c
+  }
+  return table
+})()
 
 const argv = process.argv.slice(2)
 const checkOnly = argv.includes('--check')
@@ -118,7 +131,7 @@ cpSync(ASTRBOT_DIR, stageDir, {
   filter: (src) => !/__pycache__|[\\/].*\.pyc$/.test(src),
 })
 const zipName = `${ASTRBOT_PKG_NAME}-${version}.zip`
-makeZip(ASTRBOT_PKG_NAME, join(DIST, zipName), STAGING)
+writeZipDir(stageDir, join(DIST, zipName), ASTRBOT_PKG_NAME)
 rmSync(STAGING, { recursive: true, force: true })
 ok(`AstrBot 产物：${zipName}`)
 
@@ -158,30 +171,117 @@ function runNpm(args, cwd) {
 }
 
 /**
- * 打 zip，两套归档器兜底：
- *   - Linux/macOS：`zip`
- *   - Windows：系统自带的 bsdtar（`tar -a -cf` 按扩展名推断 zip 格式）
- * 用 cwd + 相对目录名调用，绝对输出路径不经 shell，因此路径含空格也安全。
+ * 打 zip：**自己写归档器**，不再调系统 `zip` / `tar -a`。
+ *
+ * 为什么不用系统命令：它们会把每个文件的 mtime 写进条目头，于是同一份源码
+ * 在本地（Windows bsdtar）和 CI（Linux zip）打出来字节不同、SHA256 也不同——
+ * 发出去的 Release 校验和永远对不上本地 dist，用户照着核对会以为包坏了。
+ *
+ * 这里自己拼 zip：条目按路径排序、时间戳统一钉死 1980-01-01、权限统一
+ * 0644/0755、只写必要字段，因此打包结果是**跨平台确定**的，dist 与 Release
+ * 逐字节一致。DSH 侧的 tgz 本来就靠 `npm pack`（它已做同样的事）。
+ *
+ * 代价：包变大（deflate level 9 + 不写目录数据），收益是哈希可复现，
+ * 而这个包只有几十 KB，值得。
  */
-function makeZip(dirName, outPath, cwd) {
-  const attempts = [
-    ['zip', ['-r', '-q', outPath, dirName]],
-    ['tar', ['-a', '-cf', outPath, dirName]],
-  ]
-  const errors = []
-  for (const [cmd, args] of attempts) {
-    try {
-      execFileSync(cmd, args, { cwd, stdio: ['ignore', 'inherit', 'inherit'] })
-      if (existsSync(outPath)) return
-    } catch (error) {
-      errors.push(`${cmd}: ${error.message}`)
+function writeZipDir(srcDir, outPath, rootName) {
+  const entries = []
+  walk(srcDir, rootName, entries)
+  // 路径字典序排定条目顺序——顺序固定才谈得上可复现。
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+
+  const locals = []
+  const central = []
+  let offset = 0
+  for (const entry of entries) {
+    const isDir = entry.name.endsWith('/')
+    const raw = isDir ? Buffer.alloc(0) : readFileSync(entry.abs)
+    const body = isDir ? Buffer.alloc(0) : deflateRawSync(raw, { level: 9 })
+    const nameBuf = Buffer.from(entry.name, 'utf8')
+    const sum = crc32(raw)
+    // 1980-01-01 00:00:00 —— zip 的 DOS 时间能表示的最小值，写死即抹掉打包时刻。
+    const dosTime = 0
+    const dosDate = 0x0021
+    const mode = isDir ? 0o40755 : 0o100644
+
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0x0800, 6) // 文件名按 UTF-8
+    local.writeUInt16LE(8, 8) // deflate
+    local.writeUInt16LE(dosTime, 10)
+    local.writeUInt16LE(dosDate, 12)
+    local.writeUInt32LE(sum, 14)
+    local.writeUInt32LE(body.length, 18)
+    local.writeUInt32LE(raw.length, 22)
+    local.writeUInt16LE(nameBuf.length, 26)
+    local.writeUInt16LE(0, 28)
+
+    const head = Buffer.concat([local, nameBuf])
+    locals.push(head, body)
+
+    const cen = Buffer.alloc(46)
+    cen.writeUInt32LE(0x02014b50, 0)
+    cen.writeUInt16LE(0x031e, 4) // 标记为 unix 产出
+    cen.writeUInt16LE(20, 6)
+    cen.writeUInt16LE(0x0800, 8)
+    cen.writeUInt16LE(8, 10)
+    cen.writeUInt16LE(dosTime, 12)
+    cen.writeUInt16LE(dosDate, 14)
+    cen.writeUInt32LE(sum, 16)
+    cen.writeUInt32LE(body.length, 20)
+    cen.writeUInt32LE(raw.length, 24)
+    cen.writeUInt16LE(nameBuf.length, 28)
+    cen.writeUInt16LE(0, 30)
+    cen.writeUInt16LE(0, 32)
+    cen.writeUInt16LE(0, 34)
+    cen.writeUInt16LE(0, 36)
+    cen.writeUInt32LE((mode << 16) >>> 0, 38)
+    cen.writeUInt32LE(offset, 42)
+    central.push(Buffer.concat([cen, nameBuf]))
+
+    offset += head.length + body.length
+  }
+
+  const cenBuf = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(0, 4)
+  end.writeUInt16LE(0, 6)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(cenBuf.length, 12)
+  end.writeUInt32LE(offset, 16)
+  end.writeUInt16LE(0, 20)
+
+  writeFileSync(outPath, Buffer.concat([...locals, cenBuf, end]))
+}
+
+/** 递归收集条目，目录以 `/` 结尾（zip 惯例），分隔符统一成 `/`。 */
+function walk(dir, name, out) {
+  for (const child of readdirSync(dir).sort()) {
+    const abs = join(dir, child)
+    const rel = `${name}/${child}`
+    if (statSync(abs).isDirectory()) {
+      out.push({ abs, name: `${rel}/` })
+      walk(abs, rel, out)
+    } else {
+      out.push({ abs, name: rel })
     }
   }
-  fail(
-    '无法生成 zip（已尝试 `zip` 与 `tar -a`）。\n' +
-    `  ${errors.join('\n  ')}\n` +
-    '  Linux 上请安装 zip（apt-get install -y zip）。',
-  )
+}
+
+/**
+ * 标准 CRC-32（IEEE 802.3）。自己写是为了不赌 Node 版本的 zlib.crc32。
+ * 表定义在文件顶部——本模块在顶层就直接打 zip，表若放在下面会撞 const 的
+ * 暂时性死区（TDZ）。
+ */
+function crc32(buf) {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i += 1) {
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  }
+  return (c ^ 0xffffffff) >>> 0
 }
 
 function sha256(file) {

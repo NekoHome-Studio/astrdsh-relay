@@ -61,16 +61,35 @@ DSH 侧**不发 npm**：本仓库根目录不是一个 npm 包（两个插件是
 
 ## 4. 本地核对产物
 
+**先真跑一次打包，再看内容。** `npm test` 里的版本闸门走的是
+`package-release.mjs --check`，它**只校验、不打包**——归档器的那段代码在
+`--check` 下根本不会被执行。所以「`npm test` 全绿」不等于「打包脚本能跑」：
+曾经有过 `npm test` 全绿、而 `node scripts/package-release.mjs` 一跑就在 zip
+阶段崩掉（`crc32` 的查表撞上 `const` 的暂时性死区）的先例。
+
 ```powershell
-# 看 tgz 里到底有什么（应为 5 个文件）
-tar -tzf dist/dsh-astrbot-relay-0.1.0.tgz
+# 0) 真打包一遍，必须 exit code 0（这是最容易漏掉的一步）
+node scripts/package-release.mjs
+echo "exit=$LASTEXITCODE"
 
-# 看 zip 的顶层目录名（必须是 astrbot_plugin_dsh_relay/）
-tar -tf dist/astrbot_plugin_dsh_relay-0.1.0.zip
+# 1) 看 tgz 里到底有什么（应为 8 个文件：LICENSE、README.md、
+#    cordis.patch.yml、package.json 与 lib/ 下 4 个 JS）
+tar -tzf dist/dsh-astrbot-relay-<v>.tgz
 
-# 核对校验和
+# 2) 看 zip 的顶层目录名（必须是 astrbot_plugin_dsh_relay/）
+tar -tf dist/astrbot_plugin_dsh_relay-<v>.zip
+
+# 3) 核对校验和
 Get-FileHash dist/*.tgz, dist/*.zip -Algorithm SHA256
+Get-Content dist/SHA256SUMS
 ```
+
+zip 由脚本**自写归档器**生成（条目按路径排序、时间戳钉死 1980-01-01、
+权限统一 0644、deflate level 9），目的就是让同一份源码在任何平台打出来
+**字节一致**。因此：本地 `dist` 的哈希应当与 CI 发布出的同名资产**完全相同**，
+连打两次也应当完全相同。若对不上，先怀疑两边跑的不是同一版脚本（CI 侧会重建），
+而不是包坏了——这也是 `.gitignore` 把 `dist/` 排除在外的原因：产物不入库，
+只由脚本确定性重建。
 
 ## 5. CI 的检查项
 
