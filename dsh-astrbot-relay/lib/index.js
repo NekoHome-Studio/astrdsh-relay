@@ -1,7 +1,7 @@
 /**
  * dsh-astrbot-relay（星驿）— IM ↔ DSH 网桥（DSH 侧 / host half）
  *
- * 这是**八个端点全部落地的可运行实现**：
+ * 这是**九个端点全部落地的可运行实现**：
  *   - 已实现：插件契约（name / inject / Config / apply）、配置与 state 校验、
  *     路由表、Bearer 定长鉴权、健康检查、**定位（契约 §12）**、
  *     会话标题渲染、state.json 的原子读写、
@@ -11,6 +11,7 @@
  *     **agent 事件转发（旧 session/event/assistant/chunk 与新 agent/assistant-stream 双协议 → text/delta）**、
  *     **审批 waterfall（approval/request → 4 位一次性 code → POST /approval）**、
  *     **工作区清单与改指（§13：GET /workspaces、POST /session/rebind）**、
+ *     **对话中分支（§14：POST /session/fork）**、
  *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
  *   - 仍未实现：`hmacMode`、非 `one-to-one` 的 `policy`（轮转策略）、`idleTtlMs`。
  *     三者都在 `assertConfigIsUsable` 里**加载即抛错**，宁可装不上也不静默降级。
@@ -350,6 +351,7 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.CONVERSATIONS), handler: handleConversations },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WORKSPACES), handler: handleWorkspaces },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.REBIND), handler: handleRebind },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.FORK), handler: handleFork },
     ]
 
     ctx.effect(() => {
@@ -1344,6 +1346,193 @@ export function apply(ctx, config) {
           `改指失败：${String(error?.message ?? error)}`, { conversation })
       } finally {
         bridge.attaching = false
+      }
+    }
+
+    /**
+     * POST /session/fork（契约 §14）：把某个**已完成轮次**的前缀复制成一个新会话。
+     *
+     * 逐行对照官方 `ApiSessionController.fork`
+     *（dsh-api-session-controller/lib/index.js:652-745），差异只在这几处：
+     *   1. 官方 `composeAgent` 是那个类自己的方法，网桥没注入 `agentPresets`，
+     *      所以按 `handleRebind` 的做法手搓 `{agentPreset, setup}`；
+     *   2. 官方 `forkWorkspace` 只在 `origin === 'subagent'` 时回溯祖先工作区，
+     *      IM 会话走的是「直接包含」那一条，等价物就是 registry.list().find(...)；
+     *   3. 子会话不进 records、也不建 bridge——它只是一个「已建好并落了档的新会话」，
+     *      何时接管由 IM 侧用 /message 或 /session/rebind 决定。
+     */
+    async function handleFork(request, response) {
+      if (!authorize(request, response, config)) return
+      const body = await readJsonBody(request)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+      // 校验文案与 /approval、/session/rebind 共用同一套措辞：一份契约不该有两套。
+      if (typeof body.sessionId !== 'string' || body.sessionId.trim() === '') {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '字段 sessionId 必须是非空字符串')
+        return
+      }
+      const sessionId = body.sessionId.trim()
+      // atSeq 可选。官方用 SessionSeq 品牌校验（"atSeq must be a non-negative safe
+      // integer"），网桥不引 dsh-session 的运行时品牌，就地做等价判定。
+      let atSeq
+      if (body.atSeq !== void 0 && body.atSeq !== null) {
+        if (!Number.isSafeInteger(body.atSeq) || body.atSeq < 0) {
+          writeError(response, ERROR_CODE.UNSUPPORTED, '字段 atSeq 必须是非负安全整数')
+          return
+        }
+        atSeq = body.atSeq
+      }
+
+      const observe = host.sessionQuery?.observeSession
+      if (typeof observe !== 'function') {
+        writeError(response, ERROR_CODE.INTERNAL, '宿主未提供 sessionQuery.observeSession，分支不可用')
+        return
+      }
+      let observation
+      try {
+        // ⚠ 绝不能传 projectionMode:'none'：官方 presetForObservation 在
+        // projections 缺席时直接抛（api-session-controller:471-474），分支取预设要用它。
+        observation = await observe.call(host.sessionQuery, brandString(sessionId))
+      } catch (error) {
+        // 只有「源会话不存在」是调用方的问题，其余（服务缺席、读档失败）归 500。
+        if (error?.code === 'SESSION_QUERY_SESSION_NOT_FOUND') {
+          writeError(response, ERROR_CODE.NOT_FOUND, `会话 ${sessionId} 不存在`, { sessionId })
+          return
+        }
+        writeError(response, ERROR_CODE.INTERNAL,
+          `无法读取分支源会话 ${sessionId}：${String(error?.message ?? error)}`, { sessionId })
+        return
+      }
+
+      try {
+        const source = observation
+        const events = source.events
+        const lastSeq = events.at(-1)?.seq ?? -1
+        // 刀口三元式照抄官方：给了 atSeq 就找「覆盖它或更晚的第一个 turn/end」；
+        // 没给 atSeq、或 atSeq 落在日志末尾之后就找**最后一个** turn/end；
+        // 给了 atSeq 却还没走到那一轮（或那一轮没结束）时 boundary 为 undefined。
+        const boundary = (atSeq === void 0
+          ? void 0
+          : events.find((event) => event.type === EVENT.TURN_END && event.seq >= atSeq))
+          ?? (atSeq === void 0 || atSeq > lastSeq
+            ? events.findLast((event) => event.type === EVENT.TURN_END)
+            : void 0)
+        if (boundary === void 0) {
+          // 收口到 409 的理由同 /session/rebind 的目录不可用：这不是请求写错了，
+          // 是「现在还不成」，等那一轮跑完再分就行。
+          writeError(response, ERROR_CODE.AGENT_BUSY,
+            atSeq !== void 0 && atSeq <= lastSeq
+              ? `会话 ${sessionId} 尚未完成包含事件 ${atSeq} 的那一轮`
+              : `会话 ${sessionId} 没有可分支的完整轮次`,
+            { sessionId })
+          return
+        }
+        // seed 必须从 seq 0 连续、不得停在未闭合的 turn 或悬空 tool call 上：
+        // 官方把刀口一路推到下一个 turn/start，这里逐字照抄。
+        let cut = boundary.seq + 1
+        while (cut < events.length && events[cut]?.type !== EVENT.TURN_START) cut += 1
+
+        // forkWorkspace 的等价物：只认「直接包含这个会话」的工作区，未命中就不挂
+        // （官方那条 origin === 'subagent' 的祖先回溯在 IM 场景下不可能命中）。
+        const registry = workspaceRegistryOf()
+        let workspace
+        if (registry && typeof registry.list === 'function') {
+          // registry.list() 是**同步**的，按持久化顺序返回登记项（dsh-workspace:384-390）。
+          workspace = registry.list()
+            .find((entry) => Array.isArray(entry.sessionIds) && entry.sessionIds.includes(sessionId))
+        }
+
+        // 预设（工具行的唯一载体）：口径与 /session/rebind 一致——缺预设只警告；
+        // 取的是**源会话存档里的**预设，分支不该顺手换掉工具行。
+        const presets = (() => {
+          try {
+            return typeof host.get === 'function' ? host.get('agentPresets') : void 0
+          } catch {
+            return void 0
+          }
+        })()
+        if (presets === void 0) {
+          log?.warn?.(`${tag} agentPresets 服务缺席：分支出的会话不挂预设，模型将没有任何工具`)
+        }
+        const storedPresetId = source.projections?.values?.agentPreset ?? source.header?.agentPreset
+        const presetId = presets === void 0 ? void 0 : (await presets.resolve(storedPresetId)).id
+        const selection = host.agentDefaultModel.currentSelection()
+        const setup = async (agentCtx) => {
+          installModelSelection(agentCtx, { current: selection, assembled: void 0 })
+          if (presets !== void 0) await presets.mount(agentCtx, presetId)
+        }
+
+        const childId = newSessionId()
+        // seed 与 inheritedEventCount 是**平级字段**，且必须与 meta.isSeeded 成套给：
+        // seed 与 events.slice(0, cut) 是同一份数据，少给一个 create 就会拒。
+        let handle
+        try {
+          handle = await host.agents.create({
+            sessionId: brandString(childId),
+            seed: events.slice(0, cut),
+            inheritedEventCount: cut,
+            meta: {
+              // 照抄官方：cwd 缺席时**不写这个键**，写了 undefined 会被当成显式覆盖。
+              ...source.header?.cwd === void 0 ? {} : { cwd: source.header.cwd },
+              parentSession: source.header?.id ?? sessionId,
+              isSeeded: true,
+              ...presetId === void 0 ? {} : { agentPreset: presetId },
+            },
+            agentOptions: { provider: selection.provider, model: selection.model },
+            setup,
+          })
+        } catch (error) {
+          // create 失败即无残留（archive 只在这一步之后写），如实报 500。
+          writeError(response, ERROR_CODE.INTERNAL,
+            `分支会话建立失败：${String(error?.message ?? error)}`, { sessionId })
+          return
+        }
+
+        if (workspace !== void 0) {
+          try {
+            // attachSession 要求存档头里的 cwd 存在、能被 realpath 归一、且等于
+            // record.path——子会话刚在 create 里落过档，所以失败成因只剩归一不一致或
+            // 目录消失。这是**正常失败路径**，就地收口成 409，别让它变成「网桥坏了」。
+            await workspace.attachSession(childId)
+          } catch (error) {
+            let released = false
+            try {
+              if (typeof handle.dispose === 'function') { handle.dispose(); released = true }
+            } catch { /* 收尾失败不掩盖主因 */ }
+            writeError(response, ERROR_CODE.AGENT_BUSY,
+              `会话已分支，但挂到工作区失败：${String(error?.message ?? error)}`,
+              { sessionId: childId, sourceSessionId: sessionId, workspaceId: workspace.id, orphaned: true, released })
+            return
+          }
+        }
+
+        // 子会话立刻释放 handle：dispose() 的语义是「停 loop、注销 agent、把会话从
+        // 内存 store 里摘掉」，**不删持久化档**（dsh-agent/lib/types/index.d.ts:136-153），
+        // 所以子会话之后仍能被 /message 或 /session/rebind 接管——反过来，把它留在
+        // 内存里才是不对的：没有 bridge 认领它，它只会白占一个 live agent。
+        try {
+          if (typeof handle.dispose === 'function') handle.dispose()
+        } catch (error) {
+          log?.warn?.(`${tag} 分支：子会话 ${childId} 释放失败（已忽略）：${String(error)}`)
+        }
+
+        writeJson(response, 200, {
+          ok: true,
+          sessionId: childId,
+          sourceSessionId: sessionId,
+          // 复制过去的事件条数= 刀口位置，IM 侧报文案与排查都要它。
+          inheritedEventCount: cut,
+          workspaceId: workspace?.id ?? null,
+          cwd: source.header?.cwd ?? null,
+        })
+      } catch (error) {
+        writeError(response, ERROR_CODE.INTERNAL,
+          `分支失败：${String(error?.message ?? error)}`, { sessionId })
+      } finally {
+        // SessionObservation 是租约，不释放会 pin 住 prepared 缓存条目。
+        observation?.[Symbol.dispose]?.()
       }
     }
 
