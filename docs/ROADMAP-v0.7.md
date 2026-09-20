@@ -273,7 +273,8 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
 
 ### 9.6 本切片未做
 
-- `git push origin main --tags` 未执行（v0.7.1 起即未推送）。
+- `git push origin main --tags` **已执行**（2026-09-20）：`main` → `47e72d5`，`v0.7.1`/`v0.7.2` 两个 tag 已推送至 NekoHome-Studio/astrdsh-relay。
+- 实装目录 `~/.dsh/plugins/dsh-astrbot-relay/lib/index.js` 与源码仓同名文件哈希一致（8C62A6AA…AF25），桥接端 `BRIDGE_VERSION='3'`；插件重载后的发消息实测仍未记录。
 - 实装目录同步与插件重载后**发消息实测**（`/dsh 测试` 应从「落回 LLM」变为被插件接管）
   归入 R3 收尾验收；`allow_users` 重载验证同样待做。
 - R4 控制面 `/rpc` 与权限门、R3-1 `throughSeq` 语义实测、`push_to_session` 富文本
