@@ -714,21 +714,23 @@ class Main(Star):
                 f"[dsh_relay] bridge_url 为明文 HTTP（{url}）；"
                 "仅本机回环可直接使用，跨机请启用 HTTPS 或显式打开 allow_insecure_http"
             )
+        # 复检任务先起：启动探测失败也得有人接管，否则「先开 AstrBot 后开 dsh」
+        # 会把状态机变成单向熔断——桥接后来起来了，插件却永远停在未就绪。
+        self._health_task = asyncio.create_task(
+            self._health_loop(), name="dsh_relay.health"
+        )
         try:
             info = await transport.health()
         except Exception as exc:  # noqa: BLE001 - 探测失败不得阻断插件加载
             self._bridge_ok = False
             self._bridge_error = str(exc)
-            logger.warning(f"[dsh_relay] 启动探测失败：{exc}")
+            logger.warning(f"[dsh_relay] 启动探测失败：{exc}；已交由周期复检接管")
             return
         self._bridge_ok = True
         self._bridge_error = None
         logger.info(
             f"[dsh_relay] 桥接就绪：bridgeVersion={info.get('bridgeVersion')} "
             f"pathPrefix={info.get('pathPrefix')} conversations={info.get('conversations')}"
-        )
-        self._health_task = asyncio.create_task(
-            self._health_loop(), name="dsh_relay.health"
         )
 
     async def _health_loop(self) -> None:
@@ -746,7 +748,6 @@ class Main(Star):
         interval = max(interval_ms, 1000) / 1000.0
         transport = self._transport_or_create()
         while True:
-            await asyncio.sleep(interval)
             try:
                 info = await transport.health()
             except asyncio.CancelledError:
@@ -756,13 +757,14 @@ class Main(Star):
                     logger.warning(f"[dsh_relay] 健康复检失败：{exc}")
                 self._bridge_ok = False
                 self._bridge_error = str(exc)
-                continue
-            if self._bridge_ok is not True:
-                logger.info(
-                    f"[dsh_relay] 桥接已恢复：bridgeVersion={info.get('bridgeVersion')}"
-                )
-            self._bridge_ok = True
-            self._bridge_error = None
+            else:
+                if self._bridge_ok is not True:
+                    logger.info(
+                        f"[dsh_relay] 桥接已恢复：bridgeVersion={info.get('bridgeVersion')}"
+                    )
+                self._bridge_ok = True
+                self._bridge_error = None
+            await asyncio.sleep(interval)
 
     # ---- 配置读取 ----------------------------------------------------
 
