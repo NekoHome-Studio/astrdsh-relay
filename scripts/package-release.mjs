@@ -31,6 +31,8 @@ import {
 import { deflateRawSync } from 'node:zlib'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 契约版本与路由表从唯一真相副本读取，发布说明不再手写字面量（v0.8.1 修：此前硬写 3）。
+import { BRIDGE_VERSION, ROUTES } from '../dsh-astrbot-relay/lib/contract.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DSH_DIR = join(ROOT, 'dsh-astrbot-relay')
@@ -302,26 +304,28 @@ function notes(version, tag, sums, artifacts) {
 
 > ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置（\`hmacMode\` / \`policy\` 轮转 / \`idleTtlMs\`）自本版起均已接线。**
 >
-> **已实现**（九端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
+> **已实现**（${Object.keys(ROUTES).length} 个端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
 > \`GET /conversations\`、\`GET /workspaces\`（工作区清单，\`workspaceRegistry.list()\`）、
 > \`POST /session/rebind\`（改指到指定工作区：落在目标目录的新会话 + 换映射，旧会话保留）、
 > \`POST /session/fork\`（把某个对话已完成的轮次前缀复制成新会话，源会话只读，
 > 取轮次的口径照抄宿主 \`sessionController.fork\`）、
+> \`POST /session/adopt\`（把某个 IM 对话改指到一个**已存在**的会话 id，
+> 补上 v3 留下的缺口：fork 出来的子会话此前只能被 \`/message\` 顺势接管）、
 > \`POST /message\`（agent 会话驱动：create / resume / followup）、
 > \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
 > （审批 waterfall，4 位一次性 code）；含幂等（有界 LRU + TTL）、事件转发、
 > 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
-> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 九方法（health / where / workspaces /
-> rebind / fork / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
+> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十方法（health / where / workspaces /
+> rebind / fork / adopt / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
 > \`/dsh approve|reject\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
-> \`/dsh fork [轮次序号]\`、流式节流回帖与 \`push_to_session\`。
+> \`/dsh fork [轮次序号]\`、\`/dsh adopt\`、流式节流回帖与 \`push_to_session\`。
 >
 > **配置项**：\`hmacMode\`（契约 §5.2 请求体 HMAC 签名）、\`policy\` 的 \`on-demand\` /
 > \`daily\` 轮转、\`idleTtlMs\` 空闲回收均已实现；轮转与回收走
 > \`workspaceRegistry.archiveSession\`，**只归档不删历史**。DSH 侧
 > \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。
 >
-> **两侧必须配对**：本版 \`BRIDGE_VERSION=3\`（v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
+> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 
 ## 产物
