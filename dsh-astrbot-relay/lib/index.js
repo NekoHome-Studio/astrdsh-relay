@@ -129,7 +129,9 @@ export function apply(ctx, config) {
   const statePath = resolveStatePath(config.statePath)
   const { records, existed: stateExisted } = loadState(statePath)
 
-  ctx.inject(['webServer', 'agents', 'sessions', 'agentDefaultModel', 'workspaceRegistry'], (host) => {
+  // 这份清单必须与文件顶部的 `inject` 保持一致：子 fiber 解析不到的服务会沿父链
+  // 回溯到本插件的 fiber，靠的就是顶层 inject——两处漂移会变成「加载期没事、请求期抛」。
+  ctx.inject(['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry'], (host) => {
     const log = host.logger ?? ctx.logger
     const tag = `[${name}]`
 
