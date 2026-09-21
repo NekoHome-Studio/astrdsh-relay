@@ -1,5 +1,35 @@
 # 更新日志
 
+## v0.7.3 — 2026-09-21
+
+### 修复
+
+- **`/session/fork` 返回 400 空体（真实故障修复）**：host 侧的服务集合是 **Proxy**，
+  未在 `inject` 中声明的服务一旦被取值就**直接抛错**。`host.get('sessionQuery')`
+  因此同时炸掉三处调用点：`/message`（约 1091/1093 行）与 `/session/rebind`
+  （约 1493/1495 行）的读取位于 `try` 内，异常被**静默吞掉**，表现为「悄悄回退默认
+  预设、日志里一个字都没有」；`/session/fork`（约 1659/1668 行）的读取位于 `try`
+  之外，才把异常吐成 **400 空体**。三处表象不同，根因是同一个。
+
+- 修复：`inject` 声明由**五服务改为六服务**，追加 `sessionQuery`。diff 只有这一行。
+
+### 测试
+
+- 端到端复验：宿主 `/health` 200，`/session/fork` 由 400 空体变为 **200**；
+  存档头 `agentPreset` 在三处受益点都能真正读到。
+- 闸门全绿：`node --check lib/index.js` 退出码 0；`check-contract-parity` 输出
+  `BRIDGE_VERSION=3`、10 事件类型、7 错误码、9 路由；`npm test` 全绿
+  （`test:allowlist` 26 项、`test:session-title` 15 项，0 失败）；`check:version` 0.7.3。
+
+### 兼容性
+
+- 端点面、`BRIDGE_VERSION`（仍为 `"3"`）、指令面、配置键均**无变化**。
+- 版本三处同步 **0.7.3**：根 `package.json`、`dsh-astrbot-relay/package.json`、
+  `astrbot_plugin_dsh_relay/metadata.yaml`。
+- 发版卫生：工作区此前有 13 个文件呈 `w/crlf`（`lib/index.js` 自身是 LF），
+  已按 `eol=lf` 用 `git checkout-index -a -f` 重写工作区，避免本地 dist 哈希与
+  CI 产物对不上。
+
 ## v0.7.2 — 2026-09-20
 
 ### 修复

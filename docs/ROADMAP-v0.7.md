@@ -279,4 +279,49 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
   归入 R3 收尾验收；`allow_users` 重载验证同样待做。
 - R4 控制面 `/rpc` 与权限门、R3-1 `throughSeq` 语义实测、`push_to_session` 富文本
   仍按原计划留在后续切片。
+---
 
+## 10. 落地记录 · v0.7.3（fork 空体 400 根因修复）
+
+### 10.1 起因与定性
+
+- 现象三条：`/session/fork` 返回 **400 空体**；`/message` 与 `/session/rebind`
+  **不报错但悄悄回退默认预设**。
+- 排查期先在 `lib/index.js` 里打过一轮 `__FORK_TRACE__` 插桩（四十八增五删），
+  定位后**已完整回滚**：还原到 HEAD 版（98914B / sha256 `d4012856684f`），
+  只保留有效的单点修复 → 98930B / sha256 前 12 位 `025bccd22704`，
+  `__FORK_TRACE__` 与 `forkTrace` 计数均为 0。
+
+### 10.2 根因（正式坐实）
+
+- host 传给插件的服务集合是 **Proxy**：**未在 `inject` 里声明的服务，取值即抛**。
+- `sessionQuery` 当时没在 `inject` 声明，于是三处调用点同时失败，
+  差别只在 `try` 的位置：
+  - `try` **内** → 异常被静默吞掉（`/message` 约 1091/1093 行、
+    `/session/rebind` 约 1493/1495 行），表象是「无痕回退默认预设」；
+  - `try` **外** → 异常冒到顶层（`/session/fork` 约 1659/1668 行），表象是 400 空体。
+- 结论：**同一根因，三种表象**；修一行 `inject`，三处受益点同时恢复。
+
+### 10.3 修复
+
+- `dsh-astrbot-relay/lib/index.js` 第 69 行 `inject`：五服务 → **六服务**，追加
+  `sessionQuery`。整份 diff 只有这一行，行号由原第 79 行前移到第 69 行。
+
+### 10.4 闸门与实测（本轮实跑）
+
+- `node --check lib/index.js`：退出码 0。
+- `check-contract-parity`：`BRIDGE_VERSION=3`、10 事件类型、7 错误码、9 路由，退出码 0。
+- `npm test` 全绿：`test:allowlist` 26 项、`test:session-title` 15 项，0 失败；
+  `check:version` 报 0.7.3、必需文件齐全。
+- 宿主在线：`/health` 200，`bridgeVersion` 3，`conversations` 1，
+  `sessionTitleTemplate`「星驿 · {platform}/{messageType}/{sessionId}」。
+  端点须带 `Authorization: Bearer <bridge_token>`，否则一律 401；
+  前缀是 `/astrbot-relay`，不是裸根路径。
+- 端到端：`/session/fork` 由 400 空体 → **200**。
+
+### 10.5 本切片未做
+
+- 新 fork 会话（`im-dc5070a4…`，未挂工作区故不在 `/workspaces` 列表中）
+  能否被 `/message` 与 `/session/rebind` 接管，待实测。
+- 前端 `reply_render_mode=card` 的渲染欠账仍在。
+- 控制面 P5、user-questions 转发（二期）、`push_to_session` 富文本按原计划顺延。

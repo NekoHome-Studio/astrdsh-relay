@@ -66,7 +66,7 @@ const MAX_BODY_BYTES = 1_048_576
  * 依赖服务。框架会等它们就绪后再跑 apply。
  * 已核实：`dsh-agent-loop` 提供 agents factory，且本机 web profile 已挂载它。
  */
-export const inject = ['webServer', 'agents', 'sessions', 'agentDefaultModel', 'workspaceRegistry']
+export const inject = ['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry']
 
 /**
  * 配置 schema。
