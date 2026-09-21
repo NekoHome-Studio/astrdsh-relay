@@ -441,6 +441,33 @@ class BridgeTransport:
         info = await self._request("POST", contract.ROUTE_FORK, body=body)
         return self._ensure_ok(info, "分支")
 
+    # ---- §15 /session/adopt ------------------------------------------
+
+    async def adopt(
+        self, *, conversation: str, session_id: str, workspace_id: str = ""
+    ) -> dict[str, Any]:
+        """``POST /session/adopt``：把本对话改指到一个**已存在**的会话（契约 §15）。
+
+        与 ``rebind`` 的区别是骨头里的：rebind 收工作区、语义是**新建**一个会话；
+        本方法收会话 id、语义是**换映射**，目标会话本体一个字节都不动。
+
+        ``workspace_id`` 是可选的加签：给了就必须真包含该会话，否则桥接端回 409
+        ——宁可当场报错，也不写出一条「看起来挂上了、其实没挂」的假账。
+        """
+        if not conversation or not session_id:
+            raise BridgeError(
+                "conversation 与 sessionId 都必须是非空字符串",
+                code=contract.ERROR_UNSUPPORTED,
+            )
+        body: dict[str, Any] = {
+            "conversation": conversation,
+            "sessionId": session_id,
+        }
+        if workspace_id:
+            body["workspaceId"] = workspace_id
+        info = await self._request("POST", contract.ROUTE_ADOPT, body=body)
+        return self._ensure_ok(info, "认领")
+
     # ---- §3.1 /message ----------------------------------------------
 
     @staticmethod
@@ -860,6 +887,14 @@ class Main(Star):
             event.stop_event()
             return
 
+        # 认领既有会话：同上，改的是桥接端状态，不投给 agent。
+        if head == contract.COMMAND_ADOPT:
+            async for result in self._handle_adopt_command(event, command):
+                yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
         # 审批回执走独立分支：它不是对话内容，不能投给 agent。
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
@@ -1238,7 +1273,7 @@ class Main(Star):
         """``/dsh fork [atSeq]`` —— 把本对话某个已完成轮次的前缀复制成新会话（契约 §14）。
 
         分支是**复制**：源会话一条事件不动，新会话只是「已建好、落了档、还没被接管」。
-        所以要继续聊得另行接管它，本对话的映射不会因此改变。
+        所以要继续聊得用 ``/dsh adopt <子会话 id>`` 认领它，本对话的映射不会因此改变。
         """
         parts = command.split()
         at_seq: int | None = None
@@ -1298,8 +1333,84 @@ class Main(Star):
                 f"· 工作区　{info.get('workspaceId') or '（未挂载）'}",
                 f"· 目录　　{info.get('cwd') or '（未知）'}",
                 "子会话已落档、但还没被接管；本对话仍旧指着原来的会话。",
+                f"要接着聊它：{parts[0]} adopt {info.get('sessionId') or '<子会话 id>'}",
             ]
             yield event.plain_result("\n".join(lines))
+
+    async def _handle_adopt_command(
+        self, event: AstrMessageEvent, command: str
+    ) -> AsyncIterator[Any]:
+        """``/dsh adopt <会话 id> [工作区 id]`` —— 把本对话改指到既有会话（契约 §15）。
+
+        这是 ``/dsh fork`` 的后半句：fork 只把子会话**建好、落档**，映射还指着源会话；
+        认领才是「本对话从此发给它」的那一步。与 ``rebind`` 的区别是骨头里的：rebind
+        收工作区、语义是**新建**，本命令收会话 id、只是**换映射**，目标会话一条不动。
+        """
+        parts = command.split()
+        if len(parts) < 2 or not parts[1].strip():
+            yield event.plain_result(
+                f"要认领哪个会话？用法：{parts[0]} <会话 id> [工作区 id]"
+            )
+            return
+        session_id = parts[1].strip()
+        # 工作区是可选加签：省略就不带这个字段，让桥接端只按会话 id 认领。
+        workspace_id = parts[2].strip() if len(parts) >= 3 else ""
+
+        try:
+            info = await self._transport_or_create().adopt(
+                conversation=event.unified_msg_origin,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
+        except BridgeError as exc:
+            details = exc.details if isinstance(exc.details, dict) else {}
+            if exc.status == 404 or exc.code == contract.ERROR_NOT_FOUND:
+                if details.get("workspaceId"):
+                    yield event.plain_result(
+                        f"没有这个工作区：{details.get('workspaceId')}。"
+                        "先用 /dsh workspaces 看一眼，或干脆省掉工作区直接认领。"
+                    )
+                else:
+                    yield event.plain_result(
+                        f"档里没有会话 {session_id}：确认 id 没抄错，且它确实还在。"
+                    )
+            elif exc.status == 409:
+                if details.get("workspaceId"):
+                    # 给了加签、但那个工作区并不真包含这个会话：宁可当场拒绝，
+                    # 也不写出一条「看起来挂上了、其实没挂」的假账（§15）。
+                    yield event.plain_result(
+                        _prefixed_failure(
+                            "认领失败",
+                            f"{exc}。换成真包含它的工作区，或省掉工作区 id 再试。",
+                        )
+                    )
+                else:
+                    yield event.plain_result(
+                        _prefixed_failure(
+                            "认领失败", f"{exc}。等这一轮跑完再认领。"
+                        )
+                    )
+            else:
+                yield event.plain_result(_prefixed_failure("认领失败", exc))
+        except Exception as exc:  # noqa: BLE001 - 网络类失败同样只提示
+            logger.warning(f"[dsh_relay] 认领失败：{exc}")
+            yield event.plain_result(_prefixed_failure("认领失败", exc))
+        else:
+            previous = info.get("previousSessionId")
+            if info.get("adopted") is False:
+                yield event.plain_result(
+                    f"本对话本来就指着 {info.get('sessionId') or session_id}，不用认领。"
+                )
+            else:
+                lines = [
+                    "已把本对话改指到这个会话：",
+                    f"· 会话　　{info.get('sessionId') or session_id}",
+                    f"· 原会话　{previous or '（原本没有映射）'}（档留存，没被删）",
+                    f"· 工作区　{info.get('workspaceId') or '（未挂载）'}",
+                    f"· 目录　　{info.get('cwd') or '（未知）'}",
+                    "下一条消息就发给它。",
+                ]
+                yield event.plain_result("\n".join(lines))
 
     async def _handle_approval_command(
         self, event: AstrMessageEvent, command: str
@@ -1613,6 +1724,10 @@ def _usage_text(base: str) -> str:
         (
             f"{base} {contract.COMMAND_FORK} [轮次序号]",
             "把本对话已完成的轮次前缀复制成新会话（旧的不动）",
+        ),
+        (
+            f"{base} {contract.COMMAND_ADOPT} <会话 id> [工作区 id]",
+            "把本对话改指到已有会话（不新建、不删旧的）",
         ),
         (
             f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",

@@ -20,8 +20,15 @@ import { randomUUID } from 'node:crypto'
  *     `session/workspace-attach-failed` 都落到既有的 `agent_busy`（409），
  *     `session/not-found` 落到既有的 `not_found`（404）——两者的共同语义是
  *     「请求本身没错，重试同一个请求也不会成功」，与 IM 侧的提示口径一致。
+ *
+ * v4：新增 `POST /session/adopt`（契约 §15）。把某 IM 对话改指到一个**已存在**
+ *     的会话 id——补上 v3 留下的缺口：`/session/fork` 生出来的子会话此前只能
+ *     被 `/message` 顺势接管，而 fork 之后本对话仍指着源会话，所以那句
+ *     「另做一次改指」当时并无对应路由（rebind 的入参是工作区，语义是新建）。
+ *     同样**没有**新增错误码：会话不存在→`not_found`（404），工作区不含该会话
+ *     与「有投递在途」→`agent_busy`（409）。
  */
-export const BRIDGE_VERSION = '3'
+export const BRIDGE_VERSION = '4'
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({
@@ -34,6 +41,7 @@ export const ROUTES = Object.freeze({
   WORKSPACES: '/workspaces',        // GET   列出宿主已登记的工作区（契约 §13.1）
   REBIND: '/session/rebind',        // POST  把某 IM 对话改指到指定工作区（契约 §13.2）
   FORK: '/session/fork',            // POST  从某对话的完整轮次边界分支出新对话（契约 §14）
+  ADOPT: '/session/adopt',          // POST  把某 IM 对话改指到一个**已存在**的会话（契约 §15）
 })
 
 /** 下行事件类型。契约 §4。 */

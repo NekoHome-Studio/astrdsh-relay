@@ -17,8 +17,8 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 
 ## 当前状态
 
-**是可运行实现。** `BridgeTransport` 的九个方法（`health` / `where` / `workspaces` /
-`rebind` / `fork` / `send_message` / `events` / `send_approval` / `aclose`）全部落地，无 `NotImplementedError`。
+**是可运行实现。** `BridgeTransport` 的十个方法（`health` / `where` / `workspaces` /
+`rebind` / `fork` / `adopt` / `send_message` / `events` / `send_approval` / `aclose`）全部落地，无 `NotImplementedError`。
 
 | 部位 | 状态 |
 |---|---|
@@ -30,7 +30,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 契约常量（`contract.py`） | ✅ 就位 |
 | `/dsh where` 定位命令 + 本地信息（会话键/桥接地址） | ✅ 就位 |
 | 定位结果排版（`location_text.py`） | ✅ 就位（有单测） |
-| HTTP + SSE 传输层（`BridgeTransport` 九方法） | ✅ 就位 |
+| HTTP + SSE 传输层（`BridgeTransport` 十方法） | ✅ 就位 |
 | 流式节流回帖、幂等键复用、重试退避 | ✅ 就位 |
 | 主动推送 `push_to_session` | ✅ 就位 |
 | `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |
@@ -60,11 +60,12 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | `dsh workspaces` | 列出宿主登记的工作区（id / 路径 / 标题），供 `rebind` 挑目标 |
 | `dsh rebind <工作区 id>` | 把本对话**改指**到指定工作区：新建落在目标目录的会话并换掉映射，旧会话保留 |
 | `dsh fork [轮次序号]` | 把本对话**已完成的轮次前缀**复制成新会话：旧会话完全只读，新会话继承到那一轮为止，省略轮次序号即最后一整轮 |
+| `dsh adopt <会话 id> [工作区 id]` | 把本对话**改指**到一个**已存在**的会话：目标会话本体一个字节都不动，也不建新会话 |
 
 （上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
 
-**指令面这八条**（v0.6.0 口径）：`<内容>` / `help` / `where` / `approve` / `reject` /
-`workspaces` / `rebind` / `fork`。后三条是 v0.5.0–v0.6.0 新增的**宿主既有语义的薄封装**，
+**指令面这九条**（v0.8.0 口径）：`<内容>` / `help` / `where` / `approve` / `reject` /
+`workspaces` / `rebind` / `fork` / `adopt`。后四条是 v0.5.0–v0.8.0 新增的**宿主既有语义的薄封装**，
 不是新造的第二套真相；`session`（切换）与 `settings` 这一类**仍不在本版**：
 
 - 换工作区（`rebind`）= 宿主自己的 `workspaceId` 建会话路径，插件不做「就地改 cwd」
@@ -74,6 +75,13 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 - 对话中分支（`fork`）= 宿主 `sessionController.fork({ sessionId, atSeq })` 的薄封装，
   `atSeq` 省略即最后一整轮，**已随 v0.6.0 落地**（`POST /session/fork`）；
   子会话不进 records、不建 bridge，`create` 一返回即 `dispose()`，源会话全程只读。
+- 认领既有会话（`adopt`）= `POST /session/adopt` 的薄封装，是 `fork` 的**后半句**：
+  `fork` 只把子会话建好落档，映射仍指着源会话，此前**没有任何既有路径**能把映射改到
+  某个 `sessionId` 上——`/message` 的建会话分支被 `hadMapping` 锁住（有映射时一律
+  `resume` 旧 id），`/session/rebind` 只会 `create`。`adopt` 只做三件事：确认目标会话
+  存在并取其存档头里的 `cwd`、拆掉本对话此刻握着的旧 agent、把映射换成目标
+  `sessionId`；**不 resume、不 rename、不 create**，真正的 `resume` 交给下一次
+  `/message`。幂等命中（本对话本来就指着它）返回 `adopted: false` 且什么都不做。
 
 桥接端在 `inject` 里拿到了 `workspaceRegistry`，清单与改指都是**进程内直调**再各由
 一个端点透出（`GET /workspaces` / `POST /session/rebind`）；RPC 面 404 ≠ 能力不存在。

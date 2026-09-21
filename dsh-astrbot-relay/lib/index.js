@@ -462,6 +462,7 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WORKSPACES), handler: handleWorkspaces },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.REBIND), handler: handleRebind },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.FORK), handler: handleFork },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.ADOPT), handler: handleAdopt },
     ]
 
     ctx.effect(() => {
@@ -1619,6 +1620,192 @@ export function apply(ctx, config) {
     }
 
     /**
+     * POST /session/adopt（契约 §15）：把某个 IM 对话**改指到一个已存在的** DSH 会话。
+     *
+     * 与 /session/rebind 的唯一差别是「会话从哪来」：rebind 新建一个再挂，adopt 认领现成的。
+     * 补这一步的原因：/session/fork 建出的子会话既不是本对话的映射目标，也没有任何既有
+     * 路由能把映射改指过去——/message 的建会话分支被 hadMapping 锁死（有映射时一律
+     * resume 旧 id），/session/rebind 只会 create，两者合起来仍然缺「把映射改成某个
+     * sessionId」这唯一一步，于是 v3 里「子会话可被接管」是句兑现不了的话。
+     *
+     * 只做三件事，一概不碰会话本体：
+     *   1. 确认目标会话存在（observeSession），并取存档头里的 cwd；
+     *   2. 拆掉本对话此刻握着的旧 agent（顺序照搬 /session/rebind 的收尾序）；
+     *   3. 映射换成目标 sessionId，bridge.dshSessionId 就地改指。
+     * 不 resume、不 rename、不 create：目标会话本体一个字节都不动，真正的 resume 交给
+     * 下一次 /message（那时 hadMapping 为真、目标又不在 live registry 里，正好命中
+     * host.agents.resume 那条路），于是「认领」这一步不会因为宿主环境而变成半成品。
+     */
+    async function handleAdopt(request, response) {
+      if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
+      const body = await readJsonBody(request)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+      // 校验文案与 /approval、/session/rebind 共用同一套措辞：一份契约不该有两套。
+      for (const field of ['conversation', 'sessionId']) {
+        const value = body[field]
+        if (typeof value !== 'string' || value.trim() === '') {
+          writeError(response, ERROR_CODE.UNSUPPORTED, `字段 ${field} 必须是非空字符串`)
+          return
+        }
+      }
+      const conversation = body.conversation.trim()
+      const sessionId = body.sessionId.trim()
+      // workspaceId 可选：给了就必须**真的**包含这个会话，否则「认领到某工作区」是假账。
+      let workspaceId = ''
+      if (body.workspaceId !== void 0 && body.workspaceId !== null) {
+        if (typeof body.workspaceId !== 'string' || body.workspaceId.trim() === '') {
+          writeError(response, ERROR_CODE.UNSUPPORTED, '字段 workspaceId 必须是非空字符串')
+          return
+        }
+        workspaceId = body.workspaceId.trim()
+      }
+
+      const observe = host.sessionQuery?.observeSession
+      if (typeof observe !== 'function') {
+        writeError(response, ERROR_CODE.INTERNAL, '宿主未提供 sessionQuery.observeSession，认领不可用')
+        return
+      }
+      let observation
+      try {
+        observation = await observe.call(host.sessionQuery, brandString(sessionId))
+      } catch (error) {
+        // 「目标会话不存在」是调用方的问题，其余（服务缺席、读档失败）归 500——
+        // 与 /session/fork 对源会话的判定同一套。
+        if (error?.code === 'SESSION_QUERY_SESSION_NOT_FOUND') {
+          writeError(response, ERROR_CODE.NOT_FOUND, `会话 ${sessionId} 不存在`, { sessionId })
+          return
+        }
+        writeError(response, ERROR_CODE.INTERNAL,
+          `无法读取待认领的会话 ${sessionId}：${String(error?.message ?? error)}`, { sessionId })
+        return
+      }
+      try {
+        // cwd 取**存档头里的**，不接受请求参数指定：会话属于哪个目录是它出生时定死的事实，
+        // 让调用方改等于允许把 record.cwd 写成一句假话（§12.3 的对话级覆盖同理）。
+        const cwd = typeof observation.header?.cwd === 'string' ? observation.header.cwd : void 0
+
+        if (workspaceId) {
+          const registry = workspaceRegistryOf()
+          const workspace = registry && typeof registry.get === 'function'
+            ? registry.get(workspaceId)
+            : void 0
+          if (!workspace) {
+            writeError(response, ERROR_CODE.NOT_FOUND, `未知工作区 ${workspaceId}`, { workspaceId })
+            return
+          }
+          if (!(Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId))) {
+            // 收口到 409：请求本身没错，是「此刻不成立」，判定同 /session/rebind 的目录不可用。
+            writeError(response, ERROR_CODE.AGENT_BUSY,
+              `工作区 ${workspaceId} 并未包含会话 ${sessionId}，认领会写出一条假挂载`,
+              { conversation, sessionId, workspaceId })
+            return
+          }
+        }
+
+        const bridge = bridgeOf(conversation)
+        // 与 /message、/session/rebind 同一条串行化纪律：有投递在途时改指，
+        // 会让同一条消息落到两个会话里。
+        if (bridge.attaching || bridge.queue > 0) {
+          writeError(response, ERROR_CODE.AGENT_BUSY,
+            '该会话有投递或附着在途，请稍后再认领', { conversation })
+          return
+        }
+        const previousSessionId = records.get(conversation)?.dshSessionId ?? ''
+        if (previousSessionId === sessionId) {
+          // 幂等：已经指着它了，什么都不用做，也不该报错。
+          writeJson(response, 200, {
+            ok: true,
+            conversation,
+            sessionId,
+            cwd: cwd ?? null,
+            previousSessionId: previousSessionId || null,
+            adopted: false,
+            workspaceId: workspaceId || null,
+          })
+          return
+        }
+
+        bridge.attaching = true
+        try {
+          // 旧 agent 的收尾序照抄 /session/rebind 与 shutdownBridges：
+          // 先摘引用（收尾期间新到的 /message 会因 attaching 吃到 409，撞不上这次拆除）
+          // → cancel({kind:'user'}) → await whenIdle() → flush → dispose()。
+          // 目标会话**不参与**这一步：它不是本对话握着的那个，我们手里没有它的 handle。
+          const previousAgent = bridge.agent
+          const previousDispose = bridge.dispose
+          bridge.agent = null
+          bridge.dispose = null
+          if (previousAgent) {
+            try {
+              previousAgent.cancel({ kind: 'user' })
+              await previousAgent.whenIdle()
+              await host.sessions.flush(previousAgent.session)
+            } catch (error) {
+              log?.warn?.(`${tag} 认领：${conversation} 旧会话排空失败，仍继续拆除：${String(error)}`)
+            }
+          }
+          if (typeof previousDispose === 'function') {
+            try {
+              await previousDispose()
+            } catch (error) {
+              log?.warn?.(`${tag} 认领时释放旧 agent 失败（已忽略）：${String(error)}`)
+            }
+          }
+
+          // 记录只能经 newRecord 生产：手写字段等于把 location.js 的白名单抄了第二份，
+          // 漂移的症状是「写进去了、重启后没了」的静默丢映射。
+          records.set(conversation, newRecord({
+            conversation,
+            dshSessionId: sessionId,
+            // 对话级 cwd 覆盖：目标会话存档头里的目录。头里缺 cwd（早期会话）时才留 null
+            // 跟随全局配置——注意 E:\0d00\dsh-workspace 这种**未登记为工作区**的目录
+            // 也能这么跟上，resume 只认 cwd，不要求它在工作区注册表里。
+            cwd,
+            policy: config.policy,
+          }))
+          persistRecords()
+
+          // 就地改写网桥，不 delete 重建：SSE 订阅者、环形缓冲与 seq 都挂在它身上。
+          // agent/dispose 留 null——认领不建 handle，下一次 /message 会自己 resume 拿到。
+          bridge.dshSessionId = sessionId
+          bridge.agent = null
+          bridge.dispose = null
+          bridge.turn = 0
+          bridge.attempt = null
+          bridge.toolCalls = new Map()
+          bridge.approvals = new Map()
+
+          // 这里**不**调 writeSessionTitle：目标会话此刻没有 live agent，rename 的
+          // not-live 校验过不去，调了只会刷一条没用的警告。标题由下一次 /message 的
+          // writeSessionTitle 补上（那时刚 resume 完，已经 live 了）。
+
+          writeJson(response, 200, {
+            ok: true,
+            conversation,
+            sessionId,
+            cwd: cwd ?? null,
+            previousSessionId: previousSessionId || null,
+            adopted: true,
+            workspaceId: workspaceId || null,
+          })
+        } finally {
+          bridge.attaching = false
+        }
+      } catch (error) {
+        writeError(response, ERROR_CODE.INTERNAL,
+          `认领失败：${String(error?.message ?? error)}`, { conversation, sessionId })
+      } finally {
+        // SessionObservation 是租约，不释放会 pin 住 prepared 缓存条目。
+        observation?.[Symbol.dispose]?.()
+      }
+    }
+
+    /**
      * POST /session/fork（契约 §14）：把某个**已完成轮次**的前缀复制成一个新会话。
      *
      * 逐行对照官方 `ApiSessionController.fork`
@@ -1628,7 +1815,7 @@ export function apply(ctx, config) {
      *   2. 官方 `forkWorkspace` 只在 `origin === 'subagent'` 时回溯祖先工作区，
      *      IM 会话走的是「直接包含」那一条，等价物就是 registry.list().find(...)；
      *   3. 子会话不进 records、也不建 bridge——它只是一个「已建好并落了档的新会话」，
-     *      何时接管由 IM 侧用 /message 或 /session/rebind 决定。
+     *      何时接管由 IM 侧用 /message、/session/rebind 或 /session/adopt（契约 §15）决定。
      */
     async function handleFork(request, response) {
       if (!authorize(request, response, config)) return

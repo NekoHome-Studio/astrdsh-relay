@@ -1,6 +1,6 @@
 # AstrDsh Relay（星驿）接口契约（草案 / 冻结候选）
 
-> 状态：**设计冻结候选**；当前 `bridgeVersion = "3"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
+> 状态：**设计冻结候选**；当前 `bridgeVersion = "4"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
 > `docs/astrbot-side-capabilities.md`、`docs/dsh-side-capabilities.md`）；
 > 标记 `【未核实】` 的条项**不得**在实现阶段当作既成事实使用。
 >
@@ -171,7 +171,7 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "3",
+  "bridgeVersion": "4",
   "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
   "conversations": 3
@@ -388,7 +388,7 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "3"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "4"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
@@ -406,6 +406,12 @@ DSH 内 agent 触发敏感工具
   实现的**有意差异**、以及 §14.3「本版无幂等键、重试前必须先对账」这条约束，都是
   **行为层面**的约定：它们写不进常量表，IM 侧光比对字段看不出来。让版本号指向这一层
   语义，是它唯一能起作用的地方。代价与上一段相同——**v2 与 v3 不能混合部署**。
+- **v3 → v4 最像「本该不升」的一次，但仍然升了。** §15 新增的 `/session/adopt`
+  同样只是一条新路由（v3 客户端不会去调），按「老客户端会不会坏」的口径可以不升。
+  理由和 v2 → v3 一样，只是这次指向的是**能力语义**：v3 里「子会话可被接管」这句话
+  在路由表上没有对应项（`/session/rebind` 的入参是工作区、语义是新建，改不了映射），
+  所以 v3 的 fork 是**只建不接管**的半句。v4 把它补成整句；客户端若仍按 v3 理解，
+  fork 之后就没有下一步可走。代价照旧：**v3 与 v4 不能混合部署**。
 
 ---
 
@@ -554,7 +560,7 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
 - 标题的**应用**：**已落地**（v0.7.1）。宿主有 `session-title` 服务，请求期
   `host.get` 取不到时回落 `ctx.get`（`lib/session-title.js` 的 `titlesOf`）；
   写入点三处——`/message` 的建会话与复用分支、`/session/rebind` 改指之后，
-  两者都在 `followup` **之前**写，另加 `fork` 路径**显式不写**。
+  两者都在 `followup` **之前**写，另加 `fork` 与 `adopt` 两条路径**显式不写**（§15.4）。
 - **写入即钉住**：写过的标题会 supersede 宿主的自动生成标题与 LLM 自动起标题，
   此后只有显式 refresh 才解开。这是有意的取舍——反向定位是硬需求，
   名字被自动改名等于把这一半功能做没。
@@ -562,9 +568,11 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
   默认模板前缀 `星驿 · default/GroupMessage/` 占 **31 字节**（`·` 是 U+00B7，占 **2** 字节；
   写成 U+30FB「・」或 U+2022「•」就是 3 字节），留给平台/类型/会话 id 只剩 **49 字节**；
   中文每字 3 字节。改 `sessionTitleTemplate` 前先按这条算一遍。
-- **不写标题的场合**：`/fork` 建出的子会话。fork 请求体里没有 `conversation` 可反查，
-  子会话此刻不属于任何对话，硬写只会落一条无归属标题；等 IM 侧真正接管
-  （`/message` 或 `/session/rebind`）时由那两处自动补上。
+- **不写标题的场合**：`/fork` 建出的子会话、`/adopt` 认领来的目标会话。fork 的请求体里
+  没有 `conversation` 可反查，子会话此刻不属于任何对话，硬写只会落一条无归属标题；
+  adopt 的目标会话此刻在本进程里**没有 live agent**（认领不建 handle，见 §15.3），
+  rename 的 not-live 校验过不去，调了只会刷一条没用的警告。两者的标题都留到
+  IM 侧**真正接管**后的第一次 `/message` 自动补上——那时目标已 resume、已经 live。
 
 ### 12.5 `state.json`
 
@@ -825,7 +833,7 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
 >
 > **第 7 行的 `details` 带 `orphaned: true` 与 `released`**（`released` 说明子会话 handle 是否
 > 已释放）。子会话的持久化档**不删**（§14.2 第 3 条），
-> 所以它仍可被 `/message` 或 `/dsh rebind` 接管——这行 `409` 不是「白建了」，是「建好了，
+> 所以它仍可被 `/message`、`/dsh rebind` 或 `/dsh adopt`（§15）接管——这行 `409` 不是「白建了」，是「建好了，
 > 但没能一并挂进工作区」。
 
 ### 14.2 与官方 `fork` 的三处有意差异
@@ -843,9 +851,9 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
    建好，只是不在任何工作区里。挂载抛错则就地收口 `409` 并释放已建的子会话 handle。
 3. **子会话不进 records、也不建 bridge。** 它只是「一个已建好并落了档的新会话」，`create` 一返回
    就立刻 `dispose()`。`dispose()` 的语义是停 loop、注销 agent、把会话从内存 store 里摘掉，
-   **不删持久化档**（`dsh-agent/lib/types/index.d.ts:136-153`）——所以子会话随后能被 `/message`
-   或 `/dsh rebind` 接管；反过来，把它留在内存里才是错的：没有 bridge 认领它，它只是一条
-   白占位置的 live agent。**何时接管，由 IM 侧决定。**
+   **不删持久化档**（`dsh-agent/lib/types/index.d.ts:136-153`）——所以子会话随后能被 `/message`、
+   `/dsh rebind` 或 `/dsh adopt`（§15）接管；反过来，把它留在内存里才是错的：没有 bridge 认领它，它只是一条
+   白占位置的 live agent。**何时接管、以哪种方式接管，由 IM 侧决定。**
 
 ### 14.3 幂等、保活与状态一致性
 
@@ -867,3 +875,143 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
 规格与 §13.4 完全相同：接管本事件、禁止默认 LLM（`should_call_llm(True)` + `stop_event()`，
 且 `yield` 必须在 `stop_event` 之前）。服务端给出的 `message` 已是完整句子，IM 侧**不得**再拼
 前缀；`200` + `{ok:false,…}` 这一表达法同样适用——只看 HTTP 状态码会把用它报出的失败当成功。
+
+---
+
+## 15. 会话认领（v4 新增）
+
+> **一句话**：`/session/rebind` 是「**新建**一个会话再挂上」，`/session/adopt` 是
+> 「把一个**已经存在**的会话挂过来」。为什么必须有这一条，写在 §15.2。
+
+### 15.1 端点
+
+`POST /session/adopt`——必填请求头同 §5（`Authorization: Bearer <token>`，`hmacMode` 可选）。
+
+```jsonc
+{
+  "conversation": "default:GroupMessage:1000000001",
+  "sessionId": "im-acdaa6e1-8da7-4661-b8b1-61b80574ae32",
+  "workspaceId": "..."        // 可选
+}
+```
+
+- `conversation`、`sessionId` 必须是非空字符串，否则 400 `unsupported`——措辞与
+  `/approval`、`/session/rebind` 共用一套：一份契约不该有两套说法。
+- `workspaceId` 可选；给了就必须非空，且工作区注册表里**真的包含** `sessionId`
+  （`workspace.sessionIds.includes(sessionId)`），否则 409——「认领到某工作区」不许写成一句假话
+  （口径同 §12.3 的对话级覆盖）。
+- 请求体必须是 JSON 对象；`readRawBody` 的原文一份两用（签名 + 解析），与 §5.2 相同。
+
+成功响应（HTTP **200**，`ok` 恒为 `true`）：
+
+```jsonc
+{
+  "ok": true,
+  "conversation": "default:GroupMessage:1000000001",
+  "sessionId": "im-...",
+  "cwd": "E:\\0d00\\dsh-workspace",  // 目标**存档头**里的目录；头里没有则 null
+  "previousSessionId": "im-...",         // 认领前本对话指着的那个；本来没有则 null
+  "adopted": true,                       // 幂等命中时是 false（§15.6 第 1 条）
+  "workspaceId": "..."                   // 请求里没给则 null
+}
+```
+
+错误表（**没有新增错误码**，用的全是 §8 既有的那几个）：
+
+| # | 情况 | HTTP | code |
+|---|---|---|---|
+| 1 | 字段缺失/类型不对，或请求体不是 JSON 对象 | 400 | `unsupported` |
+| 2 | 宿主未提供 `sessionQuery.observeSession` | 500 | `internal` |
+| 3 | 目标会话不存在（`SESSION_QUERY_SESSION_NOT_FOUND`） | 404 | `not_found` |
+| 4 | 读目标会话失败（服务缺席、读档失败等） | 500 | `internal` |
+| 5 | `workspaceId` 未知 | 404 | `not_found` |
+| 6 | `workspaceId` 存在、但并不包含该会话 | 409 | `agent_busy` |
+| 7 | 该对话有投递或附着在途（`attaching || queue > 0`） | 409 | `agent_busy` |
+| 8 | 其余 | 500 | `internal` |
+
+> **第 3 行先于第 5～7 行**：`sessionId` 敲错、同时又有投递在途时只会得到 `404`。
+> 先答「你指的会话不存在」比先答「现在还不成」有用得多——排序理由与 §13.2、§14.1 逐字一致。
+>
+> **第 5、6 行刻意分成两种**：工作区 id 不存在是**请求写错了**；工作区存在但不含该会话是
+> **此刻不成立、换个工作区就能成**。后一种若回 `400`，IM 侧 `_unpack` 只看状态码就会置
+> `retryable=False`，于是「先挂进那个工作区再认领」永远重试不了。
+>
+> **第 7 行与 `/message`、`/session/rebind` 共用同一条串行化纪律**：有投递在途时改指，
+> 会让同一条消息落到两个会话里。
+
+### 15.2 为什么必须有这一步
+
+v3 的 `/session/fork` 只做了前半句：子会话**建好、落了档**，然后立刻 `dispose()`
+（见 §14.2 第 3 条），本对话的映射**仍旧指着源会话**。要接着跟子会话聊，缺的恰好是最后一步
+「把映射换成某个 `sessionId`」，而 v3 的路由表里没有这一项：
+
+- `/message` 的建会话分支被 `hadMapping` 锁死——有映射时一律 `resume` **旧** id，
+  永远不会去认领别的会话；
+- `/session/rebind` 的入参是**工作区**、语义是 `create`，它只会再造一个新会话。
+
+两条合起来，v3 里「子会话可被接管」是一句没有路由兜底的话。v4 补上 `/session/adopt`，
+`/dsh fork` + `/dsh adopt <子会话 id>` 才成为一对完整动作。
+
+### 15.3 只做三件事，一概不碰会话本体
+
+1. **确认目标存在**：`observeSession(sessionId)` 拿租约与存档头；`cwd` **只认存档头里的值**，
+   不接受请求参数指定——会话属于哪个目录是它出生时定死的事实（§12.3 同款理由）。
+2. **拆掉本对话此刻握着的旧 agent**：顺序照抄 `/session/rebind` 与 `shutdownBridges`——
+   先摘引用（`agent` / `dispose` 置 `null`，期间新到的 `/message` 因 `attaching` 吃到 409，
+   撞不上这次拆除）→ `cancel({kind:'user'})` → `await whenIdle()` → `sessions.flush()` →
+   `dispose()`。每一步失败只 `warn` 不中断——认领不该因为旧的排空不干净就整个失败。
+3. **换映射**：`records.set(conversation, newRecord({...}))` → `persistRecords()` → **就地改写**
+   bridge 的 `dshSessionId`（不 `delete` 重建：SSE 订阅者、环形缓冲与 `seq` 都挂在它身上），
+   `agent` / `dispose` 留 `null`，`turn` / `attempt` / `toolCalls` / `approvals` 一并归零。
+
+**不 `resume`、不 `rename`、不 `create`**：目标会话本体一个字节都不动。真正的 `resume` 交给
+下一次 `/message`——那时 `hadMapping` 为真、目标又不在 live registry 里，正好命中
+`host.agents.resume` 那条路。这样「认领」不会因为宿主环境变成半成品：`resume` 只认 `cwd`，
+**不要求**它在工作区注册表里——`E:\0d00\dsh-workspace` 这种未登记目录也能这么跟上。
+
+`cwd` 只写进 record 的**对话级覆盖**（§12.3）；目标会话自己的存档头不会被改写。
+记录只能用 `newRecord` 生产：手写字段等于把 `location.js` 的白名单抄第二份，
+漂移的症状是「写进去了、重启后没了」的静默丢映射。
+
+### 15.4 认领为什么不写标题
+
+`writeSessionTitle` 走的 rename 带 **not-live 校验**，而认领**不建 handle**
+（§15.3 第 3 条：`agent` 留 `null`），目标会话此刻在本进程里没有 live agent，调了只会刷一条
+没用的警告。所以标题留给下一次 `/message`——那时刚 `resume` 完、已经 live，
+`writeSessionTitle` 自然补上（§12.4）。
+
+旧会话的标题**原样留着**：它不再被本对话指向，但本体还在原工作区，
+不该顺手抹掉别人的痕迹。
+
+### 15.5 IM 侧指令
+
+| 指令 | 行为 |
+|---|---|
+| `/dsh adopt <会话 id> [工作区 id]` | 调 §15.1，把本对话改指到该会话；不给工作区就只换映射 |
+
+`/dsh fork` 的输出末尾会直接给出可以照抄的下一句（`要接着聊它：<前缀> adopt <子会话 id>`），
+让「分支 → 认领」不必人工去翻 `/dsh where`。
+
+规格与 §13.4 完全相同：接管本事件、禁止默认 LLM（`should_call_llm(True)` + `stop_event()`，
+且 `yield` 必须在 `stop_event` 之前）；服务端给的 `message` 已是完整句子，IM 侧**不得**再拼前缀；
+`200` + `{ok:false,…}` 这一表达法同样适用。**`adopted: false` 不是失败**——
+IM 侧按「本对话本来就指着它，不用认领」回话，不报错。
+
+### 15.6 幂等与状态一致性
+
+1. **幂等**：`records` 里本对话的 `dshSessionId` 已经等于请求的 `sessionId` 时，
+   直接返回 `200` + `adopted: false`，**什么都不做**（不拆 agent、不重写映射、不刷持久化），
+   也不报错。这是 v4 里唯一一处幂等，设计成的就是「重复调同一个认领无害」。
+2. **与 §13.3、§14.3 同罪的缺口**：本路由**没有**幂等键。超时或响应丢失时，拆旧 agent 与
+   写映射可能已经做完，客户端却报「认领失败」。因此 IM 侧的重试要求也是**先对账再重试**
+   （`/dsh where`）。区别在于代价：认领重试最多把同一句改指再做一遍（第二次命中幂等），
+   不会像 `/fork` 那样凭空多出一个会话。
+3. **失败时不产生中间态**：§15.3 的拆除步骤全是「尽力而为」（失败只 `warn`），而
+   `records.set` + `persistRecords()` 与 bridge 的就地改写之间**没有 `await`**，
+   因此不存在「存档换了、内存还没换」这一档。
+4. **`SessionObservation` 是租约**：出函数前必须 `[Symbol.dispose]()`，否则会 pin 住
+   prepared 缓存条目——所有早退分支都汇到同一个 `finally`（与 §14.3 第 4 条同款）。
+5. **一处诚实说明**：`adopt` 之后的第一次 `/message` 才真正 `resume`，所以「认领成功」
+   只保证**映射换了**，不保证**立刻聊得起来**。resume 失败按 §3 的普通 `/message` 失败处理——
+   这是有意的：把 `resume` 塞进 `adopt`，会让这条路由的成败取决于宿主当时能不能拉起目标目录，
+   失败面比收益大。

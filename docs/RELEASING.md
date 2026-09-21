@@ -145,9 +145,10 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
   （`policy` 必须落在枚举内、`idleTtlMs` 必须是有限正数），不再「加载即抛错」。
   轮转与回收走 `workspaceRegistry.archiveSession`，**只归档不删历史**。
 - 端点面：`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
-  `/approval`、`/workspaces`、`/session/rebind`、`/session/fork` 九个端点全部可用；
-  AstrBot 侧 `BridgeTransport` 的 `health` / `where` / `list_workspaces` / `rebind` /
-  `fork` / `send_message` / `events` / `send_approval` / `aclose` 全部实现。
+  `/approval`、`/workspaces`、`/session/rebind`、`/session/fork`、`/session/adopt`
+  十个端点全部可用；AstrBot 侧 `BridgeTransport` 的 `health` / `where` / `workspaces` /
+  `rebind` / `fork` / `adopt` / `send_message` / `events` / `send_approval` /
+  `aclose` 全部实现。
 
 自动生成的 `RELEASE_NOTES.md` 会在开头显式声明「已实现 / 未实现」。当前**已无未实现项**；
 将来若再预留配置，必须在这里补回该声明，**在落地之前不得移除**。

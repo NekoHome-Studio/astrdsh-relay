@@ -18,7 +18,14 @@ from __future__ import annotations
 #:     ``session/workspace-attach-failed`` 都落到既有的 ``agent_busy``（409），
 #:     ``session/not-found`` 落到既有的 ``not_found``（404）——两者的共同语义是
 #:     「请求本身没错，重试同一个请求也不会成功」，与 IM 侧的提示口径一致。
-BRIDGE_VERSION = "3"
+#:
+#: v4：新增 ``POST /session/adopt``（契约 §15）。把某 IM 对话改指到一个**已存在**
+#:     的会话 id——补上 v3 留下的缺口：``/session/fork`` 生出来的子会话此前只能
+#:     被 ``/message`` 顺势接管，而 fork 之后本对话仍指着源会话，所以那句
+#:     「另做一次改指」当时并无对应路由（rebind 的入参是工作区，语义是新建）。
+#:     同样**没有**新增错误码：会话不存在→``not_found``（404），工作区不含该会话
+#:     与「有投递在途」→``agent_busy``（409）。
+BRIDGE_VERSION = "4"
 
 #: 路由。契约 §3。相对 AstrBot 侧配置项 ``bridge_url``。
 ROUTE_MESSAGE = "/message"
@@ -34,6 +41,8 @@ ROUTE_WORKSPACES = "/workspaces"
 ROUTE_REBIND = "/session/rebind"
 #: 从某对话的完整轮次边界分支出新对话（契约 §14）。
 ROUTE_FORK = "/session/fork"
+#: 把某对话改指到一个**已存在**的会话 id（契约 §15）。
+ROUTE_ADOPT = "/session/adopt"
 
 #: 下行事件类型。契约 §4。
 EVENT_TURN_START = "turn/start"
@@ -106,3 +115,8 @@ COMMAND_REBIND = "rebind"
 
 #: 分支出新对话的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词。
 COMMAND_FORK = "fork"
+
+#: 认领既有会话的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词。
+#: 它换的是**映射**（本对话从此指着那个会话），与 ``COMMAND_REBIND`` 换工作区、
+#: ``COMMAND_FORK`` 造新会话都不是一回事，所以三个词各自独立，不互借。
+COMMAND_ADOPT = "adopt"

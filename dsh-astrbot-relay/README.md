@@ -9,7 +9,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**P1 + P2 已落地，是可运行实现。** 九个端点全部有真实 handler；契约预留的三项配置
+**P1 + P2 已落地，是可运行实现。** 十个端点全部有真实 handler；契约预留的三项配置
 （`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`）也均已接线。
 
 | 部位 | 状态 |
@@ -27,6 +27,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `POST /approval`（审批 waterfall） | ✅ 就位（4 位一次性 code，`askApproval` 挂 `approval/request`） |
 | `GET /workspaces`（工作区清单，契约 §13.1） | ✅ 就位（`workspaceRegistry.list()` 的只读面投影） |
 | `POST /session/rebind`（改指到指定工作区，契约 §13.2） | ✅ 就位（建新会话 + 换映射，旧会话保留） |
+| `POST /session/adopt`（认领已存在会话，契约 §15） | ✅ 就位（只改本对话的映射：不 resume / 不 rename / 不 create） |
 | 幂等（有界 LRU + TTL）、卸载期 `cancel → whenIdle → flush → dispose` 收尾 | ✅ 就位 |
 | 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
 | `hmacMode`（HMAC 签名）、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` 空闲回收 | ✅ 就位（轮转与回收只归档不删历史） |
@@ -39,7 +40,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 指令清单、接管行为（`should_call_llm` / `stop_event`）与过滤顺序见
 [`../astrbot_plugin_dsh_relay/README.md`](../astrbot_plugin_dsh_relay/README.md)；
-本包只负责九个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
+本包只负责十个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
 
 ## 为什么不用现成的 `/api/<method>` RPC 面
 

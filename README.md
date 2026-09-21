@@ -60,10 +60,10 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 流程细节、产物形态的理由、CI 检查项见 `docs/RELEASING.md`。
 
 > **`v0.3.0` 起是可运行实现**：`/health`、`/where`、`/conversations`、`/message`、
-> `/events`（SSE 流式）、`/approval`、`/workspaces`、`/session/rebind`、`/session/fork`
-> 九个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
-> `list_workspaces` / `rebind` / `fork` / `send_message` / `events` / `send_approval` /
-> `aclose` 全部实现。
+> `/events`（SSE 流式）、`/approval`、`/workspaces`、`/session/rebind`、`/session/fork`、
+> `/session/adopt` 十个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
+> `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` /
+> `send_approval` / `aclose` 全部实现。
 > 自动生成的发布说明会如实列出「已实现」与「未实现」；当前已无未实现项。
 
 ## 指令速查（AstrBot 侧）
@@ -83,11 +83,13 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 | `/dsh workspaces` | 列出桥接端登记的工作区（只读，不投给 agent） |
 | `/dsh rebind <工作区 id>` | 把本对话改指到指定工作区（新开会话，旧的不删） |
 | `/dsh fork [轮次序号]` | 把本对话已完成的轮次前缀复制成新会话（旧的不动） |
+| `/dsh adopt <会话 id> [工作区 id]` | 把本对话改指到一个已存在的会话（目标会话不动，也不建新会话） |
 | `/dsh approve <验证码>` | 允许一次待审批操作 |
 | `/dsh reject <验证码>` | 拒绝待审批操作 |
 
-指令面**刻意只有这八条**（v0.6.0 口径）：`workspaces`（列工作区）与 `rebind`（改指）
-随 v0.5.0 落地，`fork`（分支）随 v0.6.0 落地；`session`（切换）与 `settings` 这类入口
+指令面**刻意只有这九条**（v0.8.0 口径）：`workspaces`（列工作区）与 `rebind`（改指）
+随 v0.5.0 落地，`fork`（分支）随 v0.6.0 落地，`adopt`（认领已存在会话）随 v0.8.0
+落地；`session`（切换）与 `settings` 这类入口
 **仍不在本版**，也不在插件侧自行重造——宿主已有既有语义（换工作区是
 `sessionController.create` 的 `workspaceId` 参数 + `workspace.attachSession`，分支是
 `sessionController.fork` 的 `atSeq`），要用就直接进程内调，不另立一套。

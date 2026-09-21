@@ -1,5 +1,59 @@
 # 更新日志
 
+## v0.8.0 — 2026-09-21
+
+### 新增
+
+- **`POST /session/adopt` 会话认领（契约 §15 整章）**：把某 IM 对话改指到一个**已存在**的
+  会话 id。v3 的 `/session/fork` 只做了前半句——子会话建好、落档，随即 `dispose()`
+  （§14.2 第 3 条），本对话的映射**仍旧指着源会话**；而 v3 的路由表里恰好没有「换映射」
+  这一项：`/message` 的建会话分支被 `hadMapping` 锁死（有映射就只 `resume` 旧 id），
+  `/session/rebind` 的入参是**工作区**、语义是 `create`（只会再造一个新会话）。
+  v4 把 fork 从「只建不接管」补成整句。
+
+- **`/dsh adopt <会话 id> [工作区 id]`**：AstrBot 侧 `BridgeTransport.adopt()`
+  （`main.py` 446 行）、`_handle_adopt_command`（1340 行）与指令面同步落地；不给工作区
+  就只换映射。`/dsh fork` 的输出末尾会直接给出可照抄的下一句，分支之后不必人工去翻
+  `/dsh where`。
+
+- **契约 §15.6 的幂等**：本对话本来就指着该会话时，返回 `200` + `adopted: false`，
+  **什么都不做**（不拆 agent、不重写映射、不刷持久化），也不报错——IM 侧按「不用认领」
+  回话。这是 v4 唯一一处幂等。
+
+### 文档
+
+- 契约文件补 §15 整章（动机、为什么不是 rebind、只做三件事、工作区为何校验包含关系、
+  IM 侧指令、幂等与状态一致性），并把 §10 的版本协商补到 v3 → v4。
+- adapter 契约为两侧常量表的**逐字副本**：`lib/contract.js` 与 `contract.py` 同步
+  `BRIDGE_VERSION = "4"` / `ROUTE_ADOPT` / `COMMAND_ADOPT`，`check-contract-parity` 覆盖。
+- `README.md`、`docs/RELEASING.md`、插件 `README.md`、`dsh-astrbot-relay/README.md`
+  的端点面与指令面口径一并回填到**十个端点 / 九条指令**，并纠正长期存在的笔误
+  `list_workspaces`（真实方法名是 `workspaces`）。
+
+### 测试
+
+- 端到端复验：`/dsh adopt im-f4655bb1-…` 在真实宿主上认领成功，`cwd` 取自目标会话
+  存档头；重复调同一句命中幂等，回 `adopted: false`。
+- 闸门全绿：`check-contract-parity` 输出 `BRIDGE_VERSION=4`、10 事件类型、7 错误码、
+  10 路由；`check:py` 编译通过；`npm test` 全绿；`check:version` 0.8.0。
+
+### 兼容性
+
+- **`BRIDGE_VERSION` 由 `"3"` 升到 `"4"`。** §10 已写明这是「最像本该不升」的一次：
+  新增路由对 v3 客户端同样是增量（它不会去调），按「老客户端会不会坏」的口径本可不升；
+  仍然升的理由指向**能力语义**——v3 里「子会话可被接管」这句话在路由表上没有对应项，
+  客户端若仍按 v3 理解，fork 之后就没有下一步可走。代价照旧：**v3 与 v4 不能混合部署**，
+  升级与回滚都须两侧同时发布，不存在灰度窗口。
+- 错误面**没有新增错误码**，用的全是既有那几个：字段缺失/类型不对 → 400 `unsupported`；
+  目标会话不存在 → 404 `not_found`；`workspaceId` 未知 → 404 `not_found`；工作区存在但
+  不含该会话、以及有投递或附着在途 → 409 `agent_busy`。会话不存在的判定**先于**工作区
+  那两条（先答「你指的会话不存在」比先答「现在还不成」有用）。
+- `cwd` 一律取自目标会话**存档头**，**不接受**请求参数指定；`workspaceId` 给了就必须
+  真的包含该会话（`workspace.sessionIds.includes`），否则 409——「认领到某工作区」不许
+  写成一句假话。
+- 继承 v0.7.3 的 fork 空体修复（`inject` 六服务）；版本三处同步 **0.8.0**：根
+  `package.json`、`dsh-astrbot-relay/package.json`、`astrbot_plugin_dsh_relay/metadata.yaml`。
+
 ## v0.7.3 — 2026-09-21
 
 ### 修复
