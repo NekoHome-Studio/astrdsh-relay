@@ -2,7 +2,7 @@
 """``astrbot_plugin_dsh_relay/allowlist.py`` 的单元测试。
 
 为什么这个文件必须存在：v0.7.1 的白名单是**逐字比较**，共犯填了纯 QQ 号
-``3430088565`` 而真实 UMO 是 ``绫地宁宁:FriendMessage:3430088565``，于是判定 False →
+``1234567890`` 而真实 UMO 是 ``绫地宁宁:FriendMessage:1234567890``，于是判定 False →
 事件静默放行给默认 LLM，表现成「``/dsh 测试`` 没反应」且日志无痕。
 那次是靠反查适配器源码 + 发消息试错才定位的——这套断言就是把「试错」变成「回归」。
 
@@ -49,13 +49,14 @@ def test(name: str):
 
 
 # ── 现场复刻 ─────────────────────────────────────────────────────────
-# 这两个常量就是 v0.7.1 故障现场的原值：平台 id「绫地宁宁」、私聊 UMO、
-# 共犯的 QQ 号。改测试时别「顺手美化」成 default:GroupMessage:123456，
-# 那样就测不到中文平台 id 与真实 ID 形状了。
+# 这两个常量复刻 v0.7.1 故障现场的**形状**：中文平台 id「绫地宁宁」、
+# 私聊 UMO、十位数的发送者 ID。改测试时别「顺手美化」成
+# default:GroupMessage:123456，那样就测不到中文平台 id 与真实 ID 位数了。
+# 号码本身是编的（曾经的现场原值是共犯的真号，已换掉）。
 PLATFORM = "绫地宁宁"
-PRIVATE_UMO = f"{PLATFORM}:FriendMessage:3430088565"
+PRIVATE_UMO = f"{PLATFORM}:FriendMessage:1234567890"
 GROUP_UMO = f"{PLATFORM}:GroupMessage:987654321"
-ME = "3430088565"
+ME = "1234567890"
 
 private = allowlist.tokens_of(umo=PRIVATE_UMO, sender_id=ME, group_id="")
 group = allowlist.tokens_of(umo=GROUP_UMO, sender_id=ME, group_id="987654321")
@@ -85,7 +86,7 @@ def _() -> None:
 
 @test("UMO 不成三段时各字段为空串，而不是抛错或瞎猜")
 def _() -> None:
-    t = allowlist.tokens_of(umo="3430088565", sender_id=ME, group_id="")
+    t = allowlist.tokens_of(umo="1234567890", sender_id=ME, group_id="")
     assert t["platform"] == "" and t["message_type"] == "" and t["session_id"] == "", t
     assert t["sender"] == ME, t
 
@@ -131,8 +132,8 @@ def _() -> None:
 
 @test("group:<群号>@<qq>：群与人都要对上")
 def _() -> None:
-    assert _ok(["group:987654321@3430088565"], group) is True
-    assert _ok(["group:111@3430088565"], group) is False
+    assert _ok(["group:987654321@1234567890"], group) is True
+    assert _ok(["group:111@1234567890"], group) is False
     assert _ok(["group:987654321@999"], group) is False
 
 
@@ -153,7 +154,7 @@ def _() -> None:
 
 @test("带冒号但无已知前缀的值按 UMO 比，不按发送者比")
 def _() -> None:
-    # 若这里被误当成发送者，「3430088565」就永远比不上带冒号的模式 → 静默失效
+    # 若这里被误当成发送者，「1234567890」就永远比不上带冒号的模式 → 静默失效
     assert _ok([f"{PLATFORM}:FriendMessage:*"], private) is True
     assert _ok([f"{PLATFORM}:GroupMessage:*"], group) is True
 
@@ -177,8 +178,9 @@ def _() -> None:
 
 @test("? 只吃一个字符")
 def _() -> None:
-    assert _ok(["343008856?"], private) is True
-    assert _ok(["343008856??"], private) is False
+    # 用 ME 推导，别硬编码位数：号码本身是编的，长度会变
+    assert _ok([ME[:-1] + "?"], private) is True
+    assert _ok([ME[:-1] + "??"], private) is False
 
 
 @test("通配出现在中间：123*456 命中 123456")
@@ -219,29 +221,6 @@ def _() -> None:
     assert _ok(["*"], anon) is True   # 用户显式全放行仍然生效
 
 
-print("allow_users：ids_match")
-
-
-@test("逐 ID 命中与未命中")
-def _() -> None:
-    assert allowlist.ids_match([ME], ME) is True
-    assert allowlist.ids_match([ME, "1"], "1") is True
-    assert allowlist.ids_match([ME], "999") is False
-
-
-@test("ids_match 也吃通配，且空白 entry 不命中")
-def _() -> None:
-    assert allowlist.ids_match(["343*"], ME) is True
-    assert allowlist.ids_match([""], ME) is False
-    assert allowlist.ids_match([], ME) is True
-
-
-@test("ids_match 对空值不命中非空模式")
-def _() -> None:
-    assert allowlist.ids_match([ME], "") is False
-    assert allowlist.ids_match(["*"], "") is True
-
-
 print("接口面")
 
 
@@ -254,8 +233,33 @@ def _() -> None:
 
 @test("entry 是非字符串（YAML 里手填成数字）时不抛错")
 def _() -> None:
-    assert allowlist.entry_matches(3430088565, private) is True  # type: ignore[arg-type]
-    assert _ok([3430088565], private) is True
+    assert allowlist.entry_matches(1234567890, private) is True  # type: ignore[arg-type]
+    assert _ok([1234567890], private) is True
+
+
+print("配置面（白名单只有一个洞）")
+
+
+@test("_conf_schema.json 里不再有独立的成员白名单 allow_users")
+def _() -> None:
+    import json
+
+    schema = json.loads(
+        (ROOT / "astrbot_plugin_dsh_relay" / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    keys = schema if isinstance(schema, dict) else {}
+    assert "allow_from" in keys, list(keys)
+    assert "allow_users" not in keys, "成员白名单已并入 allow_from，别再回来"
+    # hint 里只该出现假号码，别把真人的号写进面向所有人的配置皮肤
+    hint = str(keys["allow_from"].get("hint", ""))
+    assert "allow_users" not in hint
+
+
+@test("main.py 里不再按发送者单独过滤一遍")
+def _() -> None:
+    src = (ROOT / "astrbot_plugin_dsh_relay" / "main.py").read_text(encoding="utf-8")
+    assert "allow_users" not in src, "配置项已删，调用点也该一起删"
+    assert "_user_allowed" not in src
 
 
 print(f"\n{_passed} 项通过，{_failed.__len__()} 项失败")

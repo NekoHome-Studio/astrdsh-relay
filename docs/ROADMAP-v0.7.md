@@ -148,11 +148,15 @@ Settings、图片卡合并进本插件。** 这一步决定 R2-3（P5）的规�
 
 ### 7.5 R1 收尾补记（v0.7.0 发布前同批）
 
-- **`allow_users` 成员白名单（新增功能，非原 R1 范围）**：`allow_from` 只认会话（UMO），
-  用户要的语义是「只有这些人可以用」——按发送者判。落地位置与既有两道过滤一致
+- **`allow_users` 成员白名单：v0.7.0 引入，后经 §11 撤销（v0.8.1）**。当初的诉求是「只有这些人
+  可以用」，即在会话白名单之外再按发送者收一道；落地位置与既有两道过滤一致
   （分发之前），AND 语义，取不到发送者 ID 时拒绝，被挡只记一行 `info`
-  （只记 ID、不记内容）。设计依据回填到 `docs/DESIGN.md` §3 策略表与 §4 配置清单
-  （原文只写 `group_id`/`user_id`，实现里当时只有会话级）。
+  （只记 ID、不记内容）。但事后复盘：`allow_from` 本来就已按 entry 形状分派语义
+  ——填纯数字就按发送者判——所谓「会话白名单」与「成员白名单」其实是同一件事，
+  两项之间的 AND 在正常路径下永远冗余，只是多出一个能填错、能互相打架的配置面。
+  故由 §11 只留 `allow_from` 一个洞，删掉该项与 `ids_match()`，口径回填到
+  `docs/DESIGN.md` §3 策略表与 §4 配置清单；`scripts/test-allowlist.py` 增加两道
+  守卫断言，防止 schema 或 `main.py` 里再长回来。
 - **版本口径漂移修复**：R1 落地后 `package.json` / `dsh-astrbot-relay/package.json` /
   `metadata.yaml` 三处仍写 `0.6.2`，本批统一升到 `0.7.0`，`npm run check:version` 复验。
 - **权限语义取证结论落文档**：`is_admin()` 只认 AstrBot 管理员（读写链路见
@@ -229,7 +233,7 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
 ### 9.1 起因与定性（沿用 v0.7.1 的结论）
 
 - `/dsh 测试` 无任何反应、日志无痕的定性**不变**：`allow_from` 填的是纯 QQ 号
-  `3430088565`，真实 UMO 是 `绫地宁宁:FriendMessage:3430088565`，逐字比较失败 →
+  `1234567890`，真实 UMO 是 `绫地宁宁:FriendMessage:1234567890`，逐字比较失败 →
   事件被静默放行给默认 LLM。
 - UMO 结构取证：`aiocqhttp` 适配器按 `session.message_type` 判群聊，
   `abm.type` 取 `GROUP_MESSAGE` / `FRIEND_MESSAGE`，`abm.group_id = str(event.group_id)`，
@@ -243,8 +247,8 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
 
 见 `CHANGELOG.md` v0.7.2「新增」段与 `allowlist.py` 顶部注释（唯一口径来源）。
 接口定稿：`SENDER_PREFIXES` / `GROUP_PREFIXES` / `UMO_PREFIXES` / `tokens_of` /
-`entry_matches` / `any_match`（供 `allow_from`）/ `ids_match`（供 `allow_users`）/
-`_glob_match`。
+`entry_matches` / `any_match`（供 `allow_from`）/ `_glob_match`。
+（v0.7.3 起 `ids_match` 已删，白名单只剩 `allow_from` 一道。）
 
 ### 9.3 两处判据漏洞（先写测试才暴露）
 
@@ -276,7 +280,7 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
 - `git push origin main --tags` **已执行**（2026-09-20）：`main` → `47e72d5`，`v0.7.1`/`v0.7.2` 两个 tag 已推送至 NekoHome-Studio/astrdsh-relay。
 - 实装目录 `~/.dsh/plugins/dsh-astrbot-relay/lib/index.js` 与源码仓同名文件哈希一致（8C62A6AA…AF25），桥接端 `BRIDGE_VERSION='3'`；插件重载后的发消息实测仍未记录。
 - 实装目录同步与插件重载后**发消息实测**（`/dsh 测试` 应从「落回 LLM」变为被插件接管）
-  归入 R3 收尾验收；`allow_users` 重载验证同样待做。
+  归入 R3 收尾验收；`allow_users` 重载验证同样待做（后因该项被删而作废，见 §11）。
 - R4 控制面 `/rpc` 与权限门、R3-1 `throughSeq` 语义实测、`push_to_session` 富文本
   仍按原计划留在后续切片。
 ---
@@ -325,3 +329,40 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
   能否被 `/message` 与 `/session/rebind` 接管，待实测。
 - 前端 `reply_render_mode=card` 的渲染欠账仍在。
 - 控制面 P5、user-questions 转发（二期）、`push_to_session` 富文本按原计划顺延。
+
+## 11. 落地记录 · 白名单并成一洞（v0.8.1）
+
+### 11.1 起因
+
+`astrbot_plugin_dsh_relay_config.json` 里 `allow_from` 填了纯 QQ 号、`allow_users` 空着，
+UI 上「成员白名单」一栏看着像无效。读码后确认不是 bug：v0.7.2 已让 `allow_from` 按
+entry 形状分派语义（纯数字 = 发送者、`group:` = 会话、完整 UMO = 逐字），`allow_users`
+是 v0.7.0 追加的第二道 AND，正常路径下永远冗余——设计重叠，不是缺功能。
+
+### 11.2 处置：只留一个洞
+
+- `_conf_schema.json`：删 `allow_users`；`allow_from` 的 hint 改写为
+  「纯数字 / group:群 / group:群@人 / 完整 UMO」，示例号码一律用假号 `123456789`。
+- `main.py`：删 `_user_allowed` 方法及 `on_bridge_message` 里的调用点与相关注释，
+  白名单只剩 `_session_allowed` 一道；`_tokens_of` / `_sender_of` 保留（他处仍在用）。
+- `allowlist.py`：删 `ids_match()`；模块顶部注释改写为「『会话白名单』与『成员白名单』
+  是同一件事，所以只有一个 `allow_from`」。
+- `scripts/test-allowlist.py`：删「allow_users：ids_match」整段，改为两道守卫断言
+  ——读 `_conf_schema.json` 断言无 `allow_users` 键且 hint 不含该词；读 `main.py`
+  断言源码不再出现 `allow_users` / `_user_allowed`。
+
+### 11.3 测试与文档
+
+- `python scripts/test-allowlist.py` → **25 项通过，0 项失败**。
+  原先「`?` 只吃一个字符」一项硬编码了真号位数，已改为按 `ME` 变量推导
+  （`ME[:-1] + "?"` / `ME[:-1] + "??"`），不再依赖具体号码形状。
+- 仓库内真实 QQ 号清零：`CHANGELOG.md`、`docs/ROADMAP-v0.7.md`、`main.py`、
+  `allowlist.py`、`scripts/test-allowlist.py` 中残留的十位真号统一替换为编造号
+  `1234567890`（保持十位数，测试仍复刻真实形状）。
+- 口径回填：`astrbot_plugin_dsh_relay/README.md` 的「白名单与私聊过滤」一条、
+  `docs/DESIGN.md` §3 策略表与 §4 配置清单，均已去除「两个白名单 AND」的说法。
+
+### 11.4 兼容性
+
+`allow_users` 默认空 = 不限制人，因此从未配置该项的部署**行为完全不变**；
+配置过该项的部署需把条件并进 `allow_from`（纯数字 entry 即等价写法）。

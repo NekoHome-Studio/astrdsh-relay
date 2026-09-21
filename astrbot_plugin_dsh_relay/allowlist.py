@@ -9,7 +9,7 @@
 背景（v0.7.1 的真实故障，写下来免得再犯）：
 
 ``allow_from`` 的文档口径是「会话白名单（UMO 列表）」，于是共犯照直觉填了
-纯 QQ 号 ``3430088565``；而真实 UMO 是 ``绫地宁宁:FriendMessage:3430088565``。
+纯 QQ 号；而真实 UMO 是 ``平台id:FriendMessage:<qq>`` 这种拼串。
 逐字比较判 False → 事件被**静默放行**给默认 LLM，表现是「``/dsh 测试`` 没反应」，
 日志里一个字都没有。文档没写错，是**填法不匹配**——
 但让用户为了加白名单去反查平台 id、消息类型名和 session_id 拼串，
@@ -23,7 +23,7 @@
 ``*`` 匹配任意长度、``?`` 匹配单字符，均可出现在任何字段里）：
 
   ``*``                              全部会话 / 全部人
-  纯数字（如 ``3430088565``）         发送者本人（私聊群聊都算）
+  纯数字（如 ``123456789``）          发送者本人（私聊群聊都算）
   ``user:<qq>`` / ``qq:<qq>``         同上（显式写法）
   ``group:<群号>``                    该群的任何成员（取不到群号时不放行）
   ``group:<群号>@<qq>``               该群里的这个人（按群限定成员）
@@ -31,10 +31,13 @@
   其余含 ``:`` 的值                    按完整 UMO 匹配（v0.7.1 老配置逐字兼容）
 
 例：
-  ``["3430088565"]``                     共犯在哪都能用（群里也只有他）
-  ``["group:123456@3430088565"]``        只许共犯在 123456 群里用
-  ``["绫地宁宁:FriendMessage:*"]``       平台上任意人的私聊
-  ``["绫地宁宁:GroupMessage:*"]``        平台上所有群
+  ``["123456789"]``                      这个人被点名（私聊群聊都算）
+  ``["group:123456@123456789"]``         只许他在 123456 群里用
+  ``["平台id:FriendMessage:*"]``          平台上任意人的私聊
+  ``["平台id:GroupMessage:*"]``           平台上所有群
+
+「会话白名单」与「成员白名单」是**同一件事**，所以只有一个 ``allow_from``：
+纯数字（或 ``user:`` 前缀）判的就是「哪个人」，不需要再填第二个名单。
 """
 
 from __future__ import annotations
@@ -137,17 +140,6 @@ def any_match(entries, tokens: dict[str, str]) -> bool:
     if not isinstance(entries, (list, tuple, set)) or not entries:
         return True
     return any(entry_matches(entry, tokens) for entry in entries)
-
-
-def ids_match(entries, value: str) -> bool:
-    """``allow_users`` 用的逐 ID 匹配（同样吃 ``*`` / ``?`` 通配）。
-
-    空值不命中非空模式；取不到发送者 ID 时由调用方按拒绝处理。
-    """
-    if not isinstance(entries, (list, tuple, set)) or not entries:
-        return True
-    text = str(value or "")
-    return any(_glob_match(str(entry or "").strip(), text) for entry in entries)
 
 
 def _glob_match(pattern: str, value: str) -> bool:

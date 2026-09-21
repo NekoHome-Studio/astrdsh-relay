@@ -1,5 +1,30 @@
 # 更新日志
 
+## v0.8.1 — 2026-09-21
+
+### 变更
+
+- **白名单并成一个洞：删除 `allow_users`**。v0.7.0 追加的「成员白名单」与 `allow_from`
+  是同一件事——后者自 v0.7.2 起已按 entry 形状分派语义（纯数字按发送者、
+  `group:` 按会话、完整 UMO 逐字），两项之间的 AND 在正常路径下永远冗余，
+  只多出一个能填错、能互相打架的配置面。现在只留 `allow_from`。
+- `_conf_schema.json` 删该项，`allow_from` 的 hint 改写为
+  「纯数字 / group:群 / group:群@人 / 完整 UMO」，示例号码用假号。
+- `main.py` 删 `_user_allowed` 及调用点，白名单只剩 `_session_allowed` 一道；
+  `allowlist.py` 删 `ids_match()`，模块顶部注释同步改口径。
+
+### 测试
+
+- `scripts/test-allowlist.py`：25 项通过、0 失败；新增两道守卫断言，读
+  `_conf_schema.json` 与 `main.py` 源码，防止 `allow_users` / `_user_allowed` 长回来。
+- 原先「`?` 只吃一个字符」一项硬编码了真实号码位数，改为按 `ME` 变量推导。
+
+### 兼容性
+
+- `allow_users` 默认空 = 不限制人，未配置该项的部署行为完全不变。
+- 配置过该项的部署：把条件并进 `allow_from`，纯数字 entry 即等价写法。
+- 仓库内残留的真实 QQ 号已全部替换为编造号（文档与测试同批处理）。
+
 ## v0.8.0 — 2026-09-21
 
 ### 新增
@@ -89,8 +114,8 @@
 ### 修复
 
 - **`allow_from` 填纯 QQ 号不再失配（真实故障修复）**：v0.7.1 的 `allow_from` 只做
-  完整 UMO 逐字比较，照直觉填 `3430088565` 时与真实 UMO
-  `绫地宁宁:FriendMessage:3430088565` 不相等 → 事件被**静默放行**给默认 LLM，
+  完整 UMO 逐字比较，照直觉填 `1234567890` 时与真实 UMO
+  `绫地宁宁:FriendMessage:1234567890` 不相等 → 事件被**静默放行**给默认 LLM，
   表现是「`/dsh 测试` 没反应、日志里一个字都没有」。文档没写错，是**填法不匹配**；
   但让用户为加白名单去反查平台 id、消息类型名、session_id 再拼串本来就是设计缺陷，
   本版判据改为「**填什么都要能对上**」。
@@ -119,7 +144,7 @@
 
 - 新增 `scripts/test-allowlist.py`（**26 项断言**）并接进 `npm test`
   （`test:allowlist`）。测试内写死现场复刻常量（平台 id `绫地宁宁`、私聊 UMO、
-  QQ `3430088565`），故意不做美化，免得测不到真实形状。
+  QQ `1234567890`），故意不做美化，免得测不到真实形状。
 - `check:py` 收录 `allowlist.py`；`npm test` 全绿：check:syntax → check:py →
   check:contract → test:location → test:location-text → test:allowlist 26 项 →
   test:session-title 15 项 → check:version 0.7.2。

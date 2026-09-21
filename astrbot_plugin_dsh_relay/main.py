@@ -833,10 +833,6 @@ class Main(Star):
         if not self._session_allowed(event):
             return
 
-        # 成员白名单同样在分发之前：help/where/approve 等分支一个都不漏。
-        if not self._user_allowed(event):
-            return
-
         if self._cfg("reply_in_private_only", False) and not _is_private_chat(event):
             return
 
@@ -1531,7 +1527,7 @@ class Main(Star):
 
         匹配交给 ``allowlist.any_match`` —— **宽松填**（纯 QQ 号、群号）与
         **精确填**（完整 UMO）都要能命中。这里以前只做逐字比较，于是填了纯 QQ 号
-        ``3430088565`` 而真实 UMO 是 ``绫地宁宁:FriendMessage:3430088565``，
+        ``1234567890`` 而真实 UMO 是 ``绫地宁宁:FriendMessage:1234567890``，
         判 False 后**静默放行**给默认 LLM，表现为「``/dsh 测试`` 没反应」、日志一个字
         都没有。所以现在：匹配放宽，**被挡下必记一行** ``info``（只记 UMO/ID，
         不记消息内容）——静默失败比报错贵得多。
@@ -1543,25 +1539,6 @@ class Main(Star):
             return True
         umo = str(getattr(event, "unified_msg_origin", "") or "")
         logger.info(f"[dsh_relay] 白名单外的会话 {umo}，已忽略。")
-        return False
-
-    def _user_allowed(self, event: AstrMessageEvent) -> bool:
-        """成员白名单：空 = 不限制人；两个白名单同时填写时都要满足（AND）。
-
-        取不到发送者 ID（`_sender_of` 对非 str/缺失一律返回空串）时按**拒绝**
-        处理：白名单非空说明用户明确点名了谁可以用，这时"匿名"不该被放行。
-        匹配同样吃 ``*`` / ``?`` 通配（走 ``allowlist.ids_match``）。
-        """
-        allow = self._cfg("allow_users", []) or []
-        if not isinstance(allow, (list, tuple, set)) or not allow:
-            return True
-        uid = self._sender_of(event)["id"].strip()
-        if not uid:
-            logger.info("[dsh_relay] 白名单外的成员（取不到发送者 ID），已忽略。")
-            return False
-        if allowlist.ids_match(allow, uid):
-            return True
-        logger.info(f"[dsh_relay] 白名单外的成员 {uid}，已忽略。")
         return False
 
     @classmethod
