@@ -479,7 +479,10 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
   "session page through seq X is past cursor Y"。返回体 `{records, hasMore}`，
   `hasMore = cut > 0`。证据：`dsh-api-session-controller\lib\index.js:1328,1378-1379,
   1565-1569,1602-1624`。候选来源仍是 `session/list` 的 `projections.asOfSeq`；
-  端到端回读（`_await_reply`）随 P1 实跑一次。
+  端到端回读：**已实跑结案（v0.8.2）**。本仓库的回读走 SSE
+  `BridgeTransport.events()` / `_stream_once()`（`astrbot_plugin_dsh_relay/main.py:545-671`），
+  不经 `session/page` 轮询；旧 connector 的 `_await_reply` 与 `dsh_client.py` 已不在本仓库，
+  文中对它们的引用仅作历史对象保留。实跑记录见 `control-plane-transport.md` §4.2 第 5 条。
 - 进程内直调、`fetch.register` 的 SSE、exact 路由抢占目前**只有静态证据**
   （需装插件并重启 harness 才能实跑）。
 
