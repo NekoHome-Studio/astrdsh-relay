@@ -102,6 +102,24 @@ const missing = REQUIRED.filter(([dir, rel]) => !existsSync(join(dir, rel)))
 if (missing.length) fail(`缺少必需文件：${missing.map(([, rel]) => rel).join('、')}`)
 ok(`必需文件齐全（${REQUIRED.length} 个）`)
 
+// ─────────────────────────────────────────────────────────────────────
+// 1.5 README 的「最新发布」指针（v0.8.4 发版时漏改过一次，这里钉死）
+// 指针落在仓库根 README；缺失或不等于当前版本都算失败，CI 与本地同样受管。
+// ─────────────────────────────────────────────────────────────────────
+const readmeRaw = readFileSync(join(ROOT, 'README.md'), 'utf8')
+const pointer = readmeRaw.match(/最新发布[：:]\s*`?v(\d+\.\d+\.\d+[^`\s]*)/)
+if (!pointer) {
+  fail('README.md 里找不到「最新发布：`vX.Y.Z`」指针，无法体检；请确认它还在。')
+}
+if (pointer[1] !== version) {
+  fail(
+    `README.md 的最新发布指针是 v${pointer[1]}，与当前版本 ${version} 不符。
+` +
+    '  发版前请把 README 的「最新发布」改成当前版本（v0.8.4 曾漏过这一步）。',
+  )
+}
+ok(`README 最新发布指针一致：v${pointer[1]}`)
+
 if (checkOnly) {
   ok('--check 通过，未生成产物')
   process.exit(0)
