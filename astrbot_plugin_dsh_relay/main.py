@@ -136,6 +136,17 @@ def _prefixed_failure(prefix: str, message: Any) -> str:
     return text if text.startswith(head) else f"{head}{text}"
 
 
+def _looks_like_session_id(value: str) -> bool:
+    """粗判一个 id 是不是**会话** id（DSH 侧建出来的都带 ``im-``/``session-`` 前缀）。
+
+    只用来决定 404 时提示语指向哪一半命令：``rebind`` 收工作区、``adopt`` 收会话。
+    两张纸长得几乎一样，敲错门却只换来一句「没有这个工作区」，用户会对着
+    workspaces 清单发呆——判错最多让提示换一句，不参与任何写入决策。
+    """
+    head = (value or "").strip().lower()
+    return head.startswith("im-") or head.startswith("session-")
+
+
 class BridgeTransport:
     """HTTP + SSE 传输层。契约 §3。
 
@@ -1239,11 +1250,21 @@ class Main(Star):
             )
         except BridgeError as exc:
             if exc.status == 404:
-                # 未知工作区：不是错误，是「你敲的 id 不在清单里」
-                yield event.plain_result(
-                    f"桥接端没有这个工作区：{workspace_id}。"
-                    f"用 {contract.COMMAND_WORKSPACES} 看看有哪些。"
-                )
+                # 未知工作区：不是错误，是「你敲的 id 不在清单里」。
+                # 但高频误用要当场点破：会话 id 与工作区 id 都是 UUID，肉眼
+                # 分不出谁是谁，照着旧会话尾巴敲 rebind 是必然踩的坑。
+                if _looks_like_session_id(workspace_id):
+                    yield event.plain_result(
+                        f"{workspace_id} 是会话 id，不是工作区 id。"
+                        f"{contract.COMMAND_REBIND} 只收工作区、语义是新开一个会话；"
+                        f"要切回这条既有会话请用："
+                        f"{contract.COMMAND_ADOPT} {workspace_id}"
+                    )
+                else:
+                    yield event.plain_result(
+                        f"桥接端没有这个工作区：{workspace_id}。"
+                        f"用 {contract.COMMAND_WORKSPACES} 看看有哪些。"
+                    )
             elif exc.status == 409:
                 yield event.plain_result("本对话还有任务在跑或正在投递，等这一步结束再改指。")
             else:
