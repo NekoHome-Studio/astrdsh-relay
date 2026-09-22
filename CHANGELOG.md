@@ -1,8 +1,22 @@
 # 更新日志
 
-## 未发布 · 文档收口（2026-09-21）
+## v0.8.3 — 2026-09-22
+
+### 修复
+
+- **DSH 侧 `POST /session/rebind` 对该桥接下的**所有**工作区恒返回 409 `agent_busy`**。
+  报错文案是「工作区目录当前不可用（`[object Promise]`）」，括号里那截序列化残影就是元凶：
+  `lib/index.js:1446` 写的是 `typeof workspace.status === 'function' ? workspace.status() : 'ok'`，
+  而官方 `WorkspaceEntity.status()` 是 **async**（`@deepseek-ai/dsh-workspace/lib/types/entity.d.ts:73`
+  签名 `status(): Promise<'ok' | 'missing-dir'>`，实现见 `lib/types/entity.js:114-123`）。漏掉 `await`
+  拿到的是 Promise，它永不等于字符串 `'ok'`，于是 `:1447` 的 `status !== 'ok'` **恒真**，
+  目录校验分支对小到「目录明明存在」的一切工作区都成立——`details.status` 序列化成 `{}` 也是同一个 Promise。
+  这不是官方接口变更，是调用方漏 `await`。修复即补上 `await`（同文件再无第二处 `status()` / `stat()` 调用，
+  `registry.get()` / `registry.list()` 经核对确为同步），并在该行留下「别把 await 删掉」的注释。
+  影响面仅此一处：同一判定不复用于 `/health`、`/workspaces`、`/message`、SSE 回读。
 
 ### 文档
+
 
 - 契约 / 设计 / 路线图 / 控制面 / 连接器面共六处「`session/page` 的 `throughSeq` 未实测」
   改写为**已实测结论**，并附宿主源码行号：它是 log 的闭区间上界；`-1` 合法（空窗口）、
@@ -11,8 +25,8 @@
   `gateway/internal`（`:1381`）；`maxMessages` 缺省 50（`:1328`）；`hasMore = cut > 0`
   （`:1602-1624`）；返回体 `{records, hasMore}`。
 - ROADMAP §3 两条状态同步为已收敛，「本切片未做」中的 `throughSeq` 实测移出待办。
-- 纯文档改动，无代码变更：真跑打包产物与 `v0.8.2` 发布资产尺寸一致
-  （57722 / 60544 / 195 B），**tag 不移动、不重发**。
+- 这批文档改动本身是纯文档改动、无代码变更（当时真跑打包产物与 `v0.8.2` 发布资产尺寸一致，
+  57722 / 60544 / 195 B），所以没有为它单独打 tag：它随本版一起发布。
 
 ## v0.8.2 — 2026-09-21
 

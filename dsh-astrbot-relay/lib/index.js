@@ -1443,7 +1443,11 @@ export function apply(ctx, config) {
       }
       // 目录没了的登记项要在**建会话之前**拦下：拖到 attachSession 才炸的话，
       // 报错会是一句没有上下文的 stat 失败，排查的人只能自己去翻注册表。
-      const status = typeof workspace.status === 'function' ? workspace.status() : 'ok'
+      // `status()` 是 **async**（dsh-workspace/lib/types/entity.d.ts:73 的
+      // `status(): Promise<'ok' | 'missing-dir'>`）：漏掉 await 的话拿到的是 Promise，
+      // 它永不等于 'ok'，这一处就会对**所有**工作区恒判「目录不可用」——报文里那句
+      // `工作区目录当前不可用（[object Promise]）` 就是这么来的。别把 await 删掉。
+      const status = typeof workspace.status === 'function' ? await workspace.status() : 'ok'
       if (status !== 'ok') {
         // 收口到 409，不回 400：400 在 IM 侧一律被判成「调用方的问题、不可重试」
         // （`_unpack` 的 retryable 只看状态码），而目录不可用是**服务端侧的环境故障**，
