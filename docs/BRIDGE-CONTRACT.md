@@ -472,9 +472,14 @@ DSH 侧在进程内通过 `ctx.connection.createSharedFetchHandler('/api')` 把�
 
 ### 11.4 尚未实测（P1 阻塞项）
 
-- **`session/page` 的必填 `throughSeq` 语义未实测**，而 connector 的整个回复等待
-  循环压在 `session/history` 上 → **P1 必须先实测一次**。候选来源：
-  `session/list` 的 `projections.asOfSeq`。
+- **`session/page` 的必填 `throughSeq` 语义 —— 已结案（宿主源码逐行取证）**：
+  它是 log 的**闭区间上界**（inclusive log cut）；`-1` 合法（空窗口）、`-0` 被拒；
+  另有可选 `beforeSeq`（非负安全整数，**排他**上界，供翻页）与 `maxMessages`
+  （正安全整数，缺省 50）。`throughSeq > 末尾 seq` 抛 `gateway/bad-request`
+  "session page through seq X is past cursor Y"。返回体 `{records, hasMore}`，
+  `hasMore = cut > 0`。证据：`dsh-api-session-controller\lib\index.js:1328,1378-1379,
+  1565-1569,1602-1624`。候选来源仍是 `session/list` 的 `projections.asOfSeq`；
+  端到端回读（`_await_reply`）随 P1 实跑一次。
 - 进程内直调、`fetch.register` 的 SSE、exact 路由抢占目前**只有静态证据**
   （需装插件并重启 harness 才能实跑）。
 

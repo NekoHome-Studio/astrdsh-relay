@@ -404,8 +404,11 @@ DSH 侧约 100 行即可完成转发，**无需逐方法重做那 28 个能力**
   `workspaceRegistry.list()` 或 `workspace/follow` 首帧 baseline）。
 - `session.history → session/page` 的结构对应已比对通过
   （`events→records`，条目仍是 `{type:'event',event:{type,seq,time,data}}`），
-  但**必填 `throughSeq` 的语义未实测**，而 connector 的整个回复等待循环压在它上面
-  → **P1 必须先实测**；`throughSeq` 可由 `session/list` 的 `projections.asOfSeq` 提供。
+  且**必填 `throughSeq` 的语义已逐行取证**：它是 log 的**闭区间上界**
+  （inclusive log cut），`-1` 合法（空窗口）、`-0` 被拒；可选 `beforeSeq` 为
+  **排他**上界（翻页用），`maxMessages` 缺省 50，`hasMore = cut > 0`
+  （`dsh-api-session-controller\lib\index.js:1328,1378-1379,1565-1569,1602-1624`）；
+  `throughSeq` 可由 `session/list` 的 `projections.asOfSeq` 提供。
 - `ctx.webServer.register({kind:'exact', path:'/api/...'})` 能**抢占**框架的 `/api`
   exact 路由（webserver 先查 exact 表再走 prefix）。能力上可用，但这是绕过框架
   安全边界的做法，**我们的转发路由不采用它**，而是挂在自己的 `pathPrefix` 下。

@@ -1,5 +1,19 @@
 # 更新日志
 
+## 未发布 · 文档收口（2026-09-21）
+
+### 文档
+
+- 契约 / 设计 / 路线图 / 控制面 / 连接器面共六处「`session/page` 的 `throughSeq` 未实测」
+  改写为**已实测结论**，并附宿主源码行号：它是 log 的闭区间上界；`-1` 合法（空窗口）、
+  `-0` 被拒（`index.js:1565-1569`）；越界抛 `gateway/bad-request` "past cursor"
+  （`:1378-1379`），`throughSeq >= 0` 时要求 `sourceLog[throughSeq].seq` 严格相等，否则
+  `gateway/internal`（`:1381`）；`maxMessages` 缺省 50（`:1328`）；`hasMore = cut > 0`
+  （`:1602-1624`）；返回体 `{records, hasMore}`。
+- ROADMAP §3 两条状态同步为已收敛，「本切片未做」中的 `throughSeq` 实测移出待办。
+- 纯文档改动，无代码变更：真跑打包产物与 `v0.8.2` 发布资产尺寸一致
+  （57722 / 60544 / 195 B），**tag 不移动、不重发**。
+
 ## v0.8.2 — 2026-09-21
 
 ### 修复

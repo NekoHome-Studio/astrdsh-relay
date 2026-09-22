@@ -706,7 +706,7 @@
 | R3 | RPC 名重映射（13 类） | §6.3 比对表 | `session.history→session/page`；`session.models→session/modelCatalog`；`llm.providers→llm/listProviders`；`llm.models→llm/discoverModels`；`agentPreset.*→agentPresets.*`；`skill.list→skills/list`；`subagent.list→subagents/list`；`subagent.interrupt→subagents/interruptByParent`（参数不同）；`goal.*→goals.*`；`workspace.list→无对应（改走 workspace/follow 或新建）` |
 | R4 | `host.describe` 取代方案 | `<MAIN>:175,570,839,860`；`<DSHNPM>\dsh-api-remotes\lib\client.js` 目录无 `host.*` | cwd/version/provider/model 需另找来源（session 投影 / settings / 进程内 service） |
 | R5 | 流式事件源 | `<CLIENT>:459-472`；格式迁移证据见 Q1 | 保持 `assistant/chunk`，改从 `session/event` 订阅（瞬时）或读 `assistant/message.stream`（持久） |
-| R6 | 历史/轮询收敛协议 | `<CLIENT>:441-495`（`session.history` 轮询 + `maxMessages`） | 换成 `session/page` 的窗口语义，或进程内事件订阅；需重新验证 `turn/end`、`assistant/attempt` |
+| R6 | 历史/轮询收敛协议 | `<CLIENT>:441-495`（`session.history` 轮询 + `maxMessages`）；窗口语义已取证 `dsh-api-session-controller\lib\index.js:1328,1378-1379,1565-1569,1602-1624` | 换成 `session/page` 的窗口语义（`throughSeq` 闭区间上界、`-1` 空窗口、越界 "past cursor"、`beforeSeq` 排他上界、`maxMessages` 缺省 50、`hasMore = cut > 0`），或进程内事件订阅；仍需重新验证 `turn/end`、`assistant/attempt` |
 | R7 | 多 step 收敛判定 | `<CLIENT>:473-478` | 需在当前事件面重证「最后一条即结果」，并明确 `turn/end` 与 `assistant/message` 的批内顺序假设（§11 第 4 点） |
 | R8 | 附件解析链 | `<CLIENT>:269-290` + `<HELP>:100-119` | 保留思路，但需按当前 attachment 形状重验字段名与媒体类型 |
 | R9 | 权限预设枚举反解 | `<CLIENT>:296-316`（依赖 schema `refs/uid/union.list` 内部形状） | 需按当前 `settings.describe` schema 形状重验（测试 `<TESTS>:197-214` 用的是伪造形状） |

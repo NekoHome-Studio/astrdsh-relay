@@ -54,10 +54,14 @@
 
 ---
 
-## 3. R3 · 未实测 / 证据不足（契约 §11.4 列为阻塞项）
+## 3. R3 · 未实测 / 证据不足（契约 §11.4 列为阻塞项）【本表两条均已收敛】
 
-1. **`session/page` 的 `throughSeq` 语义**：是翻页上界还是起始 seq 未实跑；
-   旧 connector 的 `_await_reply` 正压在这个调用上，属阻塞项。
+1. **`session/page` 的 `throughSeq` 语义** —— **已结案（v0.8.2，宿主源码逐行取证）**：
+   它是 log 的闭区间上界（inclusive log cut），不是"起始 seq"；`-1` 合法（空窗口）、
+   `-0` 被拒（`dsh-api-session-controller\lib\index.js:1565-1569`），越界报
+   `gateway/bad-request` "past cursor"（`:1378-1379`）。旧 connector 的
+   `_await_reply` 压在这个调用上的语义风险随之解除；证据汇总见
+   `control-plane-transport.md` §1.6.1 / §4.2 第 5 条。
 2. **`sessionTitleTemplate` 应用到 DSH 会话** —— **已落地（v0.7.1，实施记录见 §8）**。
    原先标题只在 `/where`、`/conversations` 的**响应字段**里渲染
    （`location.js:66`、`location.js:245`、`index.js:1759-1767`），没写进 DSH 会话本身，
@@ -281,8 +285,8 @@ fork 请求体里**没有 `conversation` 可反查**，子会话此刻**不属�
 - 实装目录 `~/.dsh/plugins/dsh-astrbot-relay/lib/index.js` 与源码仓同名文件哈希一致（8C62A6AA…AF25），桥接端 `BRIDGE_VERSION='3'`；插件重载后的发消息实测仍未记录。
 - 实装目录同步与插件重载后**发消息实测**（`/dsh 测试` 应从「落回 LLM」变为被插件接管）
   归入 R3 收尾验收；`allow_users` 重载验证同样待做（后因该项被删而作废，见 §11）。
-- R4 控制面 `/rpc` 与权限门、R3-1 `throughSeq` 语义实测、`push_to_session` 富文本
-  仍按原计划留在后续切片。
+- R4 控制面 `/rpc` 与权限门、`push_to_session` 富文本仍按原计划留在后续切片；
+  ~~R3-1 `throughSeq` 语义实测~~ 已于 **v0.8.2 结案**（宿主源码逐行取证，见 §3 第 1 条）。
 ---
 
 ## 10. 落地记录 · v0.7.3（fork 空体 400 根因修复）
