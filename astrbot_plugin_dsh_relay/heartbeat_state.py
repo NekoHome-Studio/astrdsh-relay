@@ -147,3 +147,65 @@ def frame_miss_ms_of(heartbeat_ms: int, factor: int) -> int:
     """
     base = max(1000, int(heartbeat_ms or 0))
     return base * max(1, int(factor or 1))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# agent 模式（由模型组织文案）
+# ──────────────────────────────────────────────────────────────────────
+
+#: ``render_agent_prompt`` 认得的占位符。未知占位符**原样保留**（便于发现写错）。
+_AGENT_PROMPT_KEYS = ("kind", "kind_cn", "conversation", "error", "minutes")
+
+
+def render_agent_prompt(
+    template: str,
+    *,
+    kind: str,
+    conversation: str = "",
+    error: str = "",
+    offline_ms: int = 0,
+) -> str:
+    """把提示词模板里的占位符替换成这次跃迁的事实。
+
+    ⚠️ 这里**不做**「要不要播报」的判断——那是 ``should_notify`` 的职责，是确定性的。
+    模型只负责**措辞**：让一句「链路断了」听起来像人说的话。把判定也交给模型，
+    就会出现「它觉得这次不重要就不说了」，而连通性通知漏报的代价比措辞难看大得多。
+    """
+    minutes = max(0, int(offline_ms)) // 60000
+    values = {
+        "kind": str(kind or ""),
+        "kind_cn": "中断" if kind == KIND_OFFLINE else "恢复",
+        "conversation": str(conversation or ""),
+        "error": str(error or ""),
+        "minutes": str(minutes),
+    }
+    out = str(template or "")
+    for key in _AGENT_PROMPT_KEYS:
+        out = out.replace("{" + key + "}", values[key])
+    return out
+
+
+def sanitize_agent_notice(text: str, max_chars: int = 200) -> str:
+    """把模型给的文案收紧成「IM 能安全显示的一段纯文本」。
+
+    三件事，每件都有理由：
+
+    1. **去掉 Markdown 标记**（``**`` / ``__`` / 反引号）：IM 端不渲染 Markdown，
+       标记会原样露给用户。这个坑 v0.8.4 踩过一次（固定文案那时带了 ``**``）。
+       只去这三个成对的标记，不当成通用 Markdown 清理器——那会开始猜内容。
+    2. **压掉换行与连续空白**：连通性通知不该是多行报告；换行还会让某些平台
+       把它拆成好几条消息。
+    3. **截断**到 ``max_chars``：模型偶尔会写一大段，刷屏比不播报更糟。截断处补省略号。
+
+    返回空串表示「这段不能用」，调用方据此退回固定文案（fail-closed）。
+    """
+    raw = str(text or "")
+    for marker in ("**", "__", "`"):
+        raw = raw.replace(marker, "")
+    flat = " ".join(raw.split())
+    limit = max(1, int(max_chars or 1))
+    if len(flat) <= limit:
+        return flat
+    if limit == 1:
+        return "…"
+    return flat[: limit - 1].rstrip() + "…"

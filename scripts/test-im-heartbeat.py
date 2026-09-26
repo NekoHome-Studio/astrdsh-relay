@@ -1,235 +1,60 @@
 #!/usr/bin/env python3
 """IM 侧心跳接线的**假 AstrBot 上下文**集成测试。
 
-补上 `scripts/test-heartbeat-state.py` 之外的那段：纯函数测过了，但
+补上 `scripts/test-heartbeat-state.py` 之外的那一段：纯函数测过了，但
 「帧刷新 → 探测接入 → 状态跃迁 → 按策略播报 → 主动发送」这条**接线**此前只做了
-静态核查。这里桩掉 `astrbot.*`，用假 Context / 假 Transport 真跑 `Main` 的方法。
+静态核查。这里用假 Context / 假 Transport 真跑 `Main` 的方法。
 
-桩的设计（与 JS 侧 `scripts/test-proactive-chain.mjs` 同一思路）：
-* `filter` 做成**任意属性都返回装饰器**，于是不管 main.py 用了哪些过滤器都不用改桩；
-* `logger` 与 `Context.send_message` 都**记录**调用，供断言；
-* `Star` 提供 KV 读写（`_restore_proactive_cursor` 依赖它）。
+共用宿主见 `scripts/_fake_astrbot.py`（指令分发/审批/问答/卡片在
+`scripts/test-im-commands.py`）。
 
 用法：python scripts/test-im-heartbeat.py
-
-⚠️ **与其他 Python 闸门不同，本测试需要一个真实依赖**：它会 import 生产模块
-`main.py`，而 `main.py` 顶部有 `import aiohttp`。aiohttp 是
-`astrbot_plugin_dsh_relay/requirements.txt` 里声明的普通 PyPI 依赖（**不是**
-宿主提供的 API），所以这里**不**用桩把它盖掉——盖掉就等于放弃验证
-「main.py 的模块图真能导入」这一条。缺失时直接失败并给出安装命令，
-**不静默跳过**：静默跳过正是「本地全绿、CI 没跑」那类漂移的来源。
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import sys
 import types
 from pathlib import Path
 
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        pass
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ROOT = Path(__file__).resolve().parent.parent
-PLUGIN_DIR = ROOT / "astrbot_plugin_dsh_relay"
-
-try:
-    import aiohttp  # noqa: F401
-except ImportError:
-    print("✗ 本测试需要 aiohttp（它会 import 生产模块 main.py，不能用桩掩盖这个导入）。")
-    print("  安装：pip install -r astrbot_plugin_dsh_relay/requirements.txt")
-    sys.exit(1)
+from _fake_astrbot import (  # noqa: E402
+    LOGGER, PLUGIN_DIR, UMO, MessageChainStub, PlainStub,
+    hb, make_main, plugin_main, section, summary, test,
+)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# 1. 桩掉 astrbot.*
-# ──────────────────────────────────────────────────────────────────────
-class _LoggerStub:
-    def __init__(self) -> None:
-        self.lines: list[tuple[str, str]] = []
+class FakeProvider:
+    """假 AstrBot provider：只实现生产代码会用的那一个方法。
 
-    def info(self, message: object) -> None:
-        self.lines.append(("info", str(message)))
+    形状按源码核实的结果来（v0.8.8）：
+    ``await provider.text_chat(prompt=…) -> LLMResponse``，文本优先取
+    ``result_chain.get_plain_text()``（``completion_text`` 已过时，仅兜底）。
+    """
 
-    def warning(self, message: object) -> None:
-        self.lines.append(("warn", str(message)))
-
-    def error(self, message: object) -> None:
-        self.lines.append(("error", str(message)))
-
-    def has(self, level: str, needle: str) -> bool:
-        return any(lv == level and needle in text for lv, text in self.lines)
-
-
-class _FilterStub:
-    """任意属性都返回一个「能当装饰器用」的可调用对象。"""
-
-    EventMessageType = types.SimpleNamespace(ALL="all", PRIVATE_MESSAGE="private", GROUP_MESSAGE="group")
-    PlatformAdapterType = types.SimpleNamespace(ALL=0)
-    PermissionType = types.SimpleNamespace(ADMIN="admin")
-
-    def __getattr__(self, _name: str):
-        def decorator(*args, **kwargs):
-            if len(args) == 1 and callable(args[0]) and not kwargs:
-                return args[0]
-
-            def wrap(fn):
-                return fn
-
-            return wrap
-
-        return decorator
-
-
-class _MessageChainStub:
-    def __init__(self, chain=None, **_kwargs) -> None:
-        self.chain = list(chain or [])
-
-
-class _PlainStub:
-    def __init__(self, text: str = "") -> None:
+    def __init__(self, text: str = "", error: Exception | None = None, hang: bool = False) -> None:
         self.text = text
+        self.error = error
+        self.hang = hang
+        self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
+
+    async def text_chat(self, prompt: str | None = None, **kwargs):
+        self.prompts.append(str(prompt or ""))
+        self.system_prompts.append(str(kwargs.get("system_prompt") or ""))
+        if self.hang:
+            await asyncio.sleep(30)
+        if self.error is not None:
+            raise self.error
+        return types.SimpleNamespace(
+            result_chain=MessageChainStub(chain=[PlainStub(text=self.text)])
+        )
 
 
-class _AstrMessageEventStub:
-    """只在类型注解里出现（文件有 `from __future__ import annotations`，不会求值）。"""
-
-
-class _AstrBotConfigStub(dict):
-    pass
-
-
-class _ContextStub:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-        self.send_should_fail = False
-
-    async def send_message(self, umo: str, chain) -> bool:
-        text = "".join(getattr(part, "text", "") for part in getattr(chain, "chain", []))
-        self.sent.append((umo, text))
-        return not self.send_should_fail
-
-
-class _StarStub:
-    def __init__(self, context=None) -> None:
-        self.context = context
-        self.kv: dict[str, object] = {}
-
-    async def put_kv_data(self, key: str, value: object) -> None:
-        self.kv[key] = value
-
-    async def get_kv_data(self, key: str, default=None):
-        return self.kv.get(key, default)
-
-
-LOGGER = _LoggerStub()
-
-
-def _install_stubs() -> None:
-    astrbot = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    event = types.ModuleType("astrbot.api.event")
-    components = types.ModuleType("astrbot.api.message_components")
-    star = types.ModuleType("astrbot.api.star")
-
-    api.AstrBotConfig = _AstrBotConfigStub
-    api.logger = LOGGER
-    event.AstrMessageEvent = _AstrMessageEventStub
-    event.filter = _FilterStub()
-    event.MessageChain = _MessageChainStub
-    components.Plain = _PlainStub
-    star.Context = _ContextStub
-    star.Star = _StarStub
-
-    astrbot.api = api
-    sys.modules.update({
-        "astrbot": astrbot,
-        "astrbot.api": api,
-        "astrbot.api.event": event,
-        "astrbot.api.message_components": components,
-        "astrbot.api.star": star,
-    })
-
-
-_install_stubs()
-sys.path.insert(0, str(PLUGIN_DIR))
-
-import heartbeat_state as hb  # noqa: E402
-import main as plugin_main  # noqa: E402
-
-UMO = "default:GroupMessage:1000000001"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 2. 假 transport 与 Main 工厂
-# ──────────────────────────────────────────────────────────────────────
-class FakeTransport:
-    def __init__(self) -> None:
-        self.health_result: dict[str, object] = {"bridgeVersion": 6, "heartbeatMs": 15000}
-        self.health_error: Exception | None = None
-        self.proactive_items: list[dict[str, object]] = []
-        self.proactive_cursor = 0
-        self.proactive_calls: list[int] = []
-        self.closed = False
-
-    async def health(self) -> dict[str, object]:
-        if self.health_error is not None:
-            raise self.health_error
-        return dict(self.health_result)
-
-    async def proactive(self, *, since: int = 0) -> dict[str, object]:
-        self.proactive_calls.append(int(since))
-        return {"ok": True, "cursor": self.proactive_cursor, "items": list(self.proactive_items)}
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-def make_main(**overrides):
-    config = {
-        "enable": True,
-        "chunk_size": 0,                       # 0 = 不切分，断言更直接
-        "heartbeat_notify": "fixed",
-        "heartbeat_frame_miss_factor": 3,
-        "heartbeat_notify_min_gap_ms": 0,
-        "heartbeat_notify_targets": [],
-        "proactive_enabled": True,
-        "proactive_poll_ms": 5000,
-        "proactive_prefix": "",
-    }
-    config.update(overrides)
-    context = _ContextStub()
-    instance = plugin_main.Main(context, config)
-    transport = FakeTransport()
-    instance._transport = transport
-    return instance, context, transport
-
-
-_passed = 0
-_failed: list[str] = []
-
-
-def test(name: str):
-    def decorator(fn):
-        global _passed
-        try:
-            fn()
-            _passed += 1
-            print(f"  \u2713 {name}")
-        except AssertionError as exc:
-            _failed.append(name)
-            print(f"  \u2717 {name}\n      {exc}")
-        return fn
-
-    return decorator
-
-
-print("A：帧刷新与在线态")
+section("A：帧刷新与在线态")
 
 m, ctx, ft = make_main()
 m._touch_frame(UMO)
@@ -336,7 +161,7 @@ def _() -> None:
     assert c.sent == []
 
 
-print("\nA：_health_loop 的接线（真跑循环）")
+section("A：_health_loop 的接线（真跑循环）")
 
 m2, ctx2, ft2 = make_main(health_interval_ms=1000)
 m2._touch_frame(UMO)
@@ -345,14 +170,14 @@ ft2.health_error = RuntimeError("boom")
 
 @test("健康复检失败会驱动一次判定（不必等第二个周期）")
 def _() -> None:
-    async def drive() -> None:
+    async def drive_loop() -> None:
         task = asyncio.create_task(m2._health_loop())
         await asyncio.sleep(0.1)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    asyncio.run(drive())
+    asyncio.run(drive_loop())
     assert m2._bridge_ok is False
     assert m2._hb_states[UMO]["state"] == hb.STATE_OFFLINE, m2._hb_states[UMO]
     assert ctx2.sent and "中断" in ctx2.sent[-1][1], ctx2.sent
@@ -365,18 +190,18 @@ def _() -> None:
     inst._touch_frame(UMO)
     t.health_result["heartbeatMs"] = 20000
 
-    async def drive() -> None:
+    async def drive_loop() -> None:
         task = asyncio.create_task(inst._health_loop())
         await asyncio.sleep(0.1)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    asyncio.run(drive())
+    asyncio.run(drive_loop())
     assert inst._hb_heartbeat_ms == 20000, inst._hb_heartbeat_ms
 
 
-print("\n回归：生命周期字段必须挂在 Main 上")
+section("回归：生命周期字段必须挂在 Main 上")
 
 
 @test("enable=false 时 initialize 直接 return，之后 terminate 不得崩溃")
@@ -412,6 +237,8 @@ def _() -> None:
     marker = "class Main(Star):"
     assert marker in source, "main.py 里找不到 Main 类，这条测试需要跟着重构"
     body = source[source.index(marker):]
+    import re
+
     names = sorted(set(re.findall(r"self\.(_[A-Za-z_][A-Za-z0-9_]*)", body)))
     assert len(names) > 15, f"只抠出 {len(names)} 个字段，正则八成失效了"
     inst, _c, _t = make_main()
@@ -433,7 +260,7 @@ def _() -> None:
     assert not missing, f"BridgeTransport 缺少这些契约方法：{missing}"
 
 
-print("\nB：主动消息的取件与发送")
+section("B：主动消息的取件与发送")
 
 m3, ctx3, ft3 = make_main()
 
@@ -516,7 +343,137 @@ def _() -> None:
     assert LOGGER.has("warn", "读取主动消息游标失败")
 
 
-print(f"\n通过 {_passed} 项，失败 {len(_failed)} 项")
-if _failed:
-    print(f"失败项：{'、'.join(_failed)}")
-    sys.exit(1)
+section("C：心跳播报的 agent 模式（由模型组织文案）")
+
+
+@test("agent 模式：用模型给的文案，而不是固定文案")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = FakeProvider("桥接断了，我先记着，回头补上。")
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent) == 1, c.sent
+    assert c.sent[-1][1] == "桥接断了，我先记着，回头补上。", c.sent[-1][1]
+
+
+@test("agent 模式的提示词里带上了原因与时长（否则模型只能瞎编）")
+def _() -> None:
+    inst, _c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst._hb_states[UMO]["offline_since"] = plugin_main._now_ms() - 125_000
+    provider = FakeProvider("嗯。")
+    inst.context.provider = provider
+    asyncio.run(inst._evaluate_heartbeats())
+    prompt = provider.prompts[-1]
+    assert UMO in prompt, prompt
+    assert "HTTP 503" in prompt, prompt
+    assert "2" in prompt, f"应含已持续分钟数：{prompt}"
+
+
+@test("没有可用 provider ⇒ 退回固定文案（不能说就不说）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = None
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent) == 1, c.sent
+    assert "中断" in c.sent[-1][1], c.sent[-1][1]
+    assert LOGGER.has("warn", "没有可用的对话模型")
+
+
+@test("模型调用抛错 ⇒ 退回固定文案（连通性通知不能因为模型挂了就丢）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = FakeProvider(error=RuntimeError("模型超时"))
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent) == 1, c.sent
+    assert "中断" in c.sent[-1][1], c.sent[-1][1]
+    assert LOGGER.has("warn", "调用失败")
+
+
+@test("模型返回空串 ⇒ 退回固定文案")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = FakeProvider("   \n  ")
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent) == 1, c.sent
+    assert "中断" in c.sent[-1][1], c.sent[-1][1]
+
+
+@test("模型输出里的 Markdown 裸星号会被清掉（IM 端不渲染 Markdown）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = FakeProvider("**注意**：桥接中断了。")
+    asyncio.run(inst._evaluate_heartbeats())
+    assert "**" not in c.sent[-1][1], c.sent[-1][1]
+    assert c.sent[-1][1] == "注意：桥接中断了。", c.sent[-1][1]
+
+
+@test("模型输出过长会被截断（防止一条通知刷满屏）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent", heartbeat_agent_max_chars=20)
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst.context.provider = FakeProvider("啊" * 100)
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent[-1][1]) <= 20, len(c.sent[-1][1])
+
+
+@test("模板为空 ⇒ 退回固定文案（不能把空提示词丢给模型）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent", heartbeat_agent_prompt="")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    provider = FakeProvider("不该被用到")
+    inst.context.provider = provider
+    asyncio.run(inst._evaluate_heartbeats())
+    assert provider.prompts == [], "空模板时不该调用模型"
+    assert len(c.sent) == 1 and "中断" in c.sent[-1][1], c.sent
+    assert LOGGER.has("warn", "heartbeat_agent_prompt 为空")
+
+
+@test("agent 模式下 provider 不存在时不 panic，且只警告一次（不刷屏）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent")
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    before = len(LOGGER.lines)
+    for _round in range(3):
+        inst._touch_frame(UMO)
+        asyncio.run(inst._evaluate_heartbeats())
+    assert c.sent, "退回固定文案后仍必须播报"
+    assert all("中断" in text or "恢复" in text for _umo, text in c.sent), c.sent
+    warnings = [t for lv, t in LOGGER.lines[before:] if lv == "warn" and "没有可用的对话模型" in t]
+    assert len(warnings) == 1, f"应只警告一次，实际 {len(warnings)} 次"
+
+
+@test("模型调用卡住 ⇒ 超时后仍播报固定文案（不能把探测器本身拖停）")
+def _() -> None:
+    inst, c, _t = make_main(heartbeat_notify="agent", heartbeat_agent_timeout_ms=1000)
+    inst._touch_frame(UMO)
+    inst._bridge_ok = False
+    inst._bridge_error = "HTTP 503"
+    inst.context.provider = FakeProvider("慢", hang=True)
+    asyncio.run(inst._evaluate_heartbeats())
+    assert len(c.sent) == 1, c.sent
+    assert "中断" in c.sent[-1][1], c.sent[-1][1]
+    assert LOGGER.has("warn", "调用失败")
+
+
+summary()

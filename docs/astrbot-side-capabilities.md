@@ -958,6 +958,41 @@ class AstrBotMessage:
 - `RateLimitStage`：固定窗口限流，超限时 `stall` 或 `discard`（`rate_limit_check/stage.py:15-41`）。本机配置 `time=60, count=30, strategy=stall` —— 高频桥接流量会被**挂起**（stall 会在窗口结束后自动恢复）。
 - `ContentSafetyCheckStage`、`SessionStatusCheckStage` 也在此链路上（`stage_order.py:3-13`）。
 
+### 3.6 插件里调用 LLM（provider）的确切入口【已证实，v0.8.8 补】
+
+星驿的心跳 `agent` 模式需要「让对话模型把一句话说成通知」，此前只知导入路径
+（§6.6 的 `from astrbot.api.provider import ProviderRequest`），**调用入口未核实**。
+现已逐行核实（本机 `C:\Users\haoxu\Downloads\AstrBot-master`）：
+
+| 环节 | 确切签名 | 证据 |
+|---|---|---|
+| 取当前对话的 chat provider | `Context.get_using_provider(umo: str \| None = None) -> Provider \| None` | `astrbot/core/star/context.py:425-444` |
+| 调用 | `async Provider.text_chat(prompt=None, session_id=None, image_urls=None, audio_urls=None, func_tool=None, contexts=None, system_prompt=None, …, model=None, **kwargs) -> LLMResponse` | `astrbot/core/provider/provider.py:96-133`（`@abc.abstractmethod`） |
+| 取回文本（**推荐**） | `MessageChain.get_plain_text(with_other_comps_mark: bool = False) -> str`，链在 `LLMResponse.result_chain` 上 | `astrbot/core/provider/entities.py:298`；`astrbot/core/message/message_event_result.py:149-189` |
+| 取回文本（兜底） | `LLMResponse.completion_text`（property） | `astrbot/core/provider/entities.py:386-401` |
+
+四条要点：
+
+1. **`completion_text` 已被上游自己标为过时**：「返回的结果文本，已经过时，
+   推荐使用 `result_chain`」（`entities.py:352`）。所以先取 `result_chain`，
+   它为空/取不到时才回落到 `completion_text`。
+2. **`get_using_provider(umo)` 会走会话级模型偏好**（`provider_manager.get_using_provider(provider_type=CHAT_COMPLETION, umo=…)`），
+   因此同一个群里配的模型与 Web UI 里看到的一致；没有可用 provider 时返回 `None`
+   （**不是**抛异常），调用方必须自己判空。
+3. **`text_chat` 没有内置超时**。从常驻循环里 await 它（例如星驿的健康复检循环）
+   **必须**自己包 `asyncio.wait_for`——否则模型端点卡住会把那个循环一起拖停。
+4. **它在不在 AstrBot 默认 LLM 链路上无关**：`should_call_llm(True)` 只拦默认链路，
+   **不拦插件自己发起的请求**（`astr_message_event.py:949` 的注释原文就是这个意思）。
+
+### 3.7 附录：本报告未覆盖、但实现时踩到的形状问题
+
+- **异步生成器 vs 协程**：`async for x in self._handler(...)` 要求 `_handler` 里
+  **真的有 `yield`**。没有 `yield` 时它是协程，`async for` 会抛
+  `TypeError: 'async for' requires an object with __aiter__ method, got coroutine`——
+  而且这个异常会一路穿过 `on_bridge_message` 打断整条回帖。星驿 v0.8.7 及以前
+  的审批/问答转达就踩了这一条（见 CHANGELOG v0.8.8）。**类型注解 `AsyncIterator`
+  不产生任何运行时保证**，别拿它当契约。
+
 ---
 
 ## 4. 持久化与配置

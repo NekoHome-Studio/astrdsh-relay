@@ -336,14 +336,22 @@ AttributeError: 'Main' object has no attribute '_hb_states'
 
 1. ~~**常连 SSE 的粒度**~~ → **作废**：改用有界发件箱 + 轮询（§2 决策更新）。
 2. **`bridgeVersion` 升不升 6**？→ **升了**（契约 §10 已写入 v5→v6 依据）。
-3. **A 的 `agent` 模式**要不要做？→ **本版不做**，且**不放进配置选项**：
-   需要先核实 AstrBot 的 LLM 调用入口，本项目不接受「大概是」。若被手工写进配置，
-   加载期 `warn` 一次并退化为固定文案，不假装它已生效。
+3. **A 的 `agent` 模式**要不要做？→ **v0.8.8 已做**。前置的「核实 AstrBot 的 LLM
+   调用入口」在 v0.8.8 补齐（证据见 `docs/astrbot-side-capabilities.md` §3.6 与
+   契约 §17.4.1）。四条实现约束写进了契约：**必须有超时**（这次调用挂在健康复检
+   循环上，模型卡住等于探测器停摆）、取不到模型/抛错/超时/空**一律退回固定文案**、
+   模型输出**先洗再发**（去 Markdown 标记、压成一行、截断）、提示词模板由配置给出。
+   另外明确了分工：**要不要播报是确定性的**（`should_notify`），模型只负责措辞。
 4. **在线态是否持久化**（入 `state.json`）？→ **不持久化**：它是运行时事实，
    重启即重置更干净。**但 `proactive_cursor` 必须持久化**（IM 侧 KV）——
    不持久化会导致插件重载后把发件箱里剩下的重发一遍（§18.1）。
-5. **AstrBot 侧 LLM 调用 API 需核实**：仍是 Q3 的前置，未核实。
-   我需要读源码确认入口（大概是 `context` 上的 provider 接口），**不接受「大概是」**。
+5. **AstrBot 侧 LLM 调用 API 需核实** → **已核实**（v0.8.8）：
+   `Context.get_using_provider(umo)`（`astrbot/core/star/context.py:425`）→
+   `await Provider.text_chat(prompt=…, system_prompt=…)`（`provider.py:96`）→
+   文本优先 `LLMResponse.result_chain.get_plain_text()`（`message_event_result.py:149`），
+   `completion_text` 已过时只作兜底。当时那句「大概是 `context` 上的 provider 接口」
+   猜对了方向，但**猜对不等于核实**——签名、空值语义（返回 `None` 而不是抛异常）、
+   以及「没有内置超时」这三条都是读源码才知道的。
 6. **B 的提示词是否要包含会话摘要**？带上「上次对话在聊什么」会显著提高心跳质量，
    但需要读历史（`sessionQuery` / 投影），成本与隐私都要权衡。首版建议**不带**。
 7. **`proactive` 消息在 IM 侧是否要 @ 或加前缀**（如「（主动）」）？可配置，默认不加。
@@ -372,6 +380,14 @@ AttributeError: 'Main' object has no attribute '_hb_states'
 ---
 
 ## 10 测试计划（**已全部落地**）
+
+> v0.8.8 追加：假宿主那两层现在是**两个文件**——`scripts/_fake_astrbot.py` 是共用宿主
+> （桩 + 假 transport + 假事件），`test-im-heartbeat.py` 测心跳/主动消息，
+> `test-im-commands.py` 测指令分发/审批/问答/卡片。后者里还有一条**元测试**：
+> 逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名——
+> 因为桩写错时，上面所有用例都会给出看似合理的假结论（真的踩过：假 `fork`
+> 参数名写成 `upto_turn`、真名是 `at_seq`，于是处理器的 `except Exception`
+> 把 TypeError 吞掉，测试看到的是「没有任何调用」）。
 
 | 层 | 落地形态 |
 |---|---|

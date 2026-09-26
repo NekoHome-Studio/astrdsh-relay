@@ -385,6 +385,25 @@ function notes(version, tag, sums, artifacts) {
 > 真的能起一轮 turn，本机没有活的 DSH 宿主可验（契约 §18.8）。若它不起作用，表现是
 > 「日志说发起了、但永远没有回复」，A 半不受影响。
 >
+> **v0.8.8 新增/修复**：心跳播报的 **\`agent\` 模式**——由对话模型把「链路断了/恢复了」
+> 组织成一句人话（\`heartbeat_notify=agent\`）。**要不要播报是确定性的、模型只负责措辞**：
+> 把判定也交给模型就会出现「它觉得这次不重要就不说了」，而连通性漏报的代价远大于措辞难看。
+> 新增 \`heartbeat_agent_prompt\` / \`heartbeat_agent_system_prompt\` /
+> \`heartbeat_agent_max_chars\` / \`heartbeat_agent_timeout_ms\`；取不到模型、抛错、超时、
+> 返回空、模板为空**一律退回固定文案**（绝不因为模型挂了就漏报）；模型输出先洗再发
+> （去 Markdown 标记、压成一行、截断）。AstrBot 的 LLM 入口已在源码里核实
+> （\`Context.get_using_provider\` → \`Provider.text_chat\` →
+> \`result_chain.get_plain_text()\`）。
+>
+> 🔴 **同时修掉一处用户可见的严重缺陷（v0.8.7 及以前一直如此）**：
+> \`_on_approval_required\` / \`_on_question_required\` 标注 \`AsyncIterator\` 却**完全没有
+> \`yield\`**（因此是协程），而调用点写的是 \`async for\` ⇒
+> \`TypeError: 'async for' requires an object with __aiter__ method, got coroutine\`。
+> 后果是**审批与问答提示根本到不了用户**，而且这个异常会打断整条 turn 的回帖；
+> 审批 waterfall 本身又没有超时，agent 会一直挂在等一个不可能到的答案上。
+> 已改为 \`await\`，并加了从两侧钉住形状的测试。**本版 \`BRIDGE_VERSION\` 仍是 \`6\`，
+> 只动 IM 侧，两侧可以不同时升级。**
+>
 > **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 

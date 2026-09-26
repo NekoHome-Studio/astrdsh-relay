@@ -133,18 +133,25 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
   所以 `main.py` 里 `import astrbot` / `import aiohttp` 都不影响这一步）；
 - DSH 侧 `node --check` 遍历 `lib/` 下**全部** JS（新增文件不必回来改 workflow）；
 - 两侧契约常量一致性（`scripts/check-contract-parity.mjs`）；
-- 两侧纯逻辑单测 + 两套**假宿主**接线测试（见 `package.json` 的 `test` 链）；
+- 两侧纯逻辑单测 + **两套假宿主接线测试**（`scripts/test-im-heartbeat.py`、
+  `scripts/test-im-commands.py`，共用 `scripts/_fake_astrbot.py`；见 `package.json` 的 `test` 链）；
 - 版本一致性闸门；
 - 完整打包冒烟：Node 22 与 Node 24 各真打一遍，两轮的 `SHA256SUMS` 必须逐字节相同，
   并 `sha256sum -c` 核对（`--check` 不执行归档器，所以这里跑的是真打包）。
 
 > **CI 只装一个 Python 依赖**：`pip install -r astrbot_plugin_dsh_relay/requirements.txt`
-> （即 `aiohttp`）。它之所以必要，是因为 `scripts/test-im-heartbeat.py` 会 import
-> **生产模块 `main.py`**，而后者顶部有 `import aiohttp`。aiohttp 是插件**声明的
-> PyPI 依赖**，不是宿主 API，所以装它不算「把宿主装进 CI」；
-> 其余 Python 闸门都是零依赖纯函数。**刻意不装 astrbot**——那是宿主，靠桩。
-> 该测试在缺少 aiohttp 时**直接失败并给出安装命令**，不静默跳过：
+> （即 `aiohttp`）。它之所以必要，是因为 `scripts/test-im-heartbeat.py` 与
+> `scripts/test-im-commands.py` 会 import **生产模块 `main.py`**，而后者顶部有
+> `import aiohttp`。aiohttp 是插件**声明的 PyPI 依赖**，不是宿主 API，所以装它不算
+> 「把宿主装进 CI」；其余 Python 闸门都是零依赖纯函数。**刻意不装 astrbot**——那是宿主，靠桩。
+> 这两个测试在缺少 aiohttp 时**直接失败并给出安装命令**，不静默跳过：
 > 静默跳过正是「本地全绿、CI 没跑」那类漂移的来源。
+>
+> **假宿主的分工**（v0.8.8 起）：`scripts/_fake_astrbot.py` 是共用宿主
+> （`astrbot.*` 桩 + 假 transport + 假事件 + 从 `_conf_schema.json` 读默认值的工厂），
+> 被两个测试文件共用；其中 `test-im-commands.py` 另有一条**元测试**，
+> 逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名——
+> 桩写错比生产代码写错更危险：它会让上面所有用例都给出看似合理的假结论。
 
 ## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 

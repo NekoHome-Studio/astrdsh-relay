@@ -151,8 +151,32 @@
     "description": "连通性变化的播报策略",
     "type": "string",
     "default": "off",
-    "options": ["off", "fixed", "offline-only"],
-    "hint": "off=只写日志；fixed=掉线与恢复都播报固定文案；offline-only=只播掉线。由模型组织文案的 agent 模式尚未接线（需先核实 AstrBot 的 LLM 入口），故不在选项里"
+    "options": ["off", "fixed", "agent", "offline-only"],
+    "hint": "off=只写日志；fixed=掉线与恢复都播报固定文案；agent=由对话模型组织措辞（取不到模型/调用失败/超时一律退回固定文案，不会漏报）；offline-only=只播掉线"
+  },
+  "heartbeat_agent_prompt": {
+    "description": "agent 模式的提示词模板",
+    "type": "string",
+    "default": "星驿（IM ↔ DSH 网桥）刚刚检测到与 DSH 的连接{kind_cn}：对话={conversation}，原因={error}，已持续 {minutes} 分钟。请用一句中文、口语化、不超过 40 字地告诉用户这件事。不要用 Markdown 标记，不要问候，不要解释技术细节，不要添加原文没有的信息。",
+    "hint": "可用占位符：{kind}（offline/recovered）、{kind_cn}（中断/恢复）、{conversation}、{error}、{minutes}。未知占位符原样保留，便于发现写错"
+  },
+  "heartbeat_agent_system_prompt": {
+    "description": "agent 模式的系统提示词",
+    "type": "string",
+    "default": "你是星驿（一个 IM ↔ DSH 网桥插件）的播报助手。你只负责把给定的事实说成一句自然的通知，不判断该不该说、不补充任何未给出的事实。",
+    "hint": "留空则不传 system_prompt"
+  },
+  "heartbeat_agent_max_chars": {
+    "description": "agent 文案的最大长度（字符）",
+    "type": "int",
+    "default": 200,
+    "hint": "超出会截断并补省略号；模型偶尔会写一大段，刷屏比不播报更糟"
+  },
+  "heartbeat_agent_timeout_ms": {
+    "description": "agent 文案调用的超时（毫秒）",
+    "type": "int",
+    "default": 15000,
+    "hint": "必须有：这次调用挂在健康复检循环上，模型端点卡住等于探测器本身停摆；超时按「用不了」处理并退回固定文案"
   },
   "heartbeat_notify_targets": {
     "description": "播报白名单（UMO 列表，空=已知的全部对话）",

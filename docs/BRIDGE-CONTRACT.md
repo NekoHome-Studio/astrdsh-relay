@@ -1231,19 +1231,43 @@ SSE 半开连接最常见的形态；只做见帧会漏掉「一直没有任何�
 
 ### 17.4 播报策略（IM 侧）
 
-`heartbeat_notify`：`off`（默认，只写日志）/ `fixed`（掉线与恢复都播报）/
-`offline-only`（只播掉线）。另有 `heartbeat_notify_targets`（UMO 白名单，
-空 = 已知的全部对话）与 `heartbeat_notify_min_gap_ms`（默认 600000，
-防抖动刷屏；**首次掉线不受它限制**）。
+`heartbeat_notify`：`off`（默认，只写日志）/ `fixed`（掉线与恢复都播报固定文案）/
+`agent`（由对话模型组织措辞）/ `offline-only`（只播掉线）。另有
+`heartbeat_notify_targets`（UMO 白名单，空 = 已知的全部对话）与
+`heartbeat_notify_min_gap_ms`（默认 600000，防抖动刷屏；**首次掉线不受它限制**）。
 
-- 文案是**固定的**，含原因（`_bridge_error`）与已持续时长；不足一分钟不显示时长。
 - **文案里不许出现 Markdown 粗体**（`**`）：IM 端不渲染 Markdown，星号会原样露给
-  用户。v0.8.4 已经踩过一次（见 CHANGELOG）。
-- **`agent` 模式未接线**：由模型决定说不说、说什么，需要先核实 AstrBot 的 LLM
-  调用入口，本版**不接受「大概是」**。该值若被手工写进配置，加载期 `warn` 一次并
-  退化为固定文案——不假装它已生效。因此它**不在** `_conf_schema.json` 的选项里。
-- 播报**只发固定文案的那一条**，不改动会话的活跃时间戳（否则会把「久未活动」
-  判据搅乱，见 §18.4）。
+  用户。v0.8.4 已经踩过一次（见 CHANGELOG）。固定文案由 `format_fixed_notice`
+  保证，`agent` 文案由 `sanitize_agent_notice` 洗掉（见下）。
+- 播报**只发那一条**，不改动会话的活跃时间戳（否则会把「久未活动」判据搅乱，见 §18.4）。
+- **判定与措辞严格分开**：**要不要播报**是确定性的（`should_notify`），模型只负责
+  **怎么说**。把判定也交给模型，就会出现「它觉得这次不重要就不说了」——
+  而连通性漏报的代价远大于措辞难看。
+
+#### 17.4.1 `agent` 模式（IM 侧，v0.8.8 起已接线）
+
+AstrBot 的 LLM 入口**已在源码里核实**（不再有「大概是」）：
+
+| 环节 | 证据 |
+|---|---|
+| 取当前对话的 chat provider | `Context.get_using_provider(umo) -> Provider \| None`，`astrbot/core/star/context.py:425` |
+| 调用 | `await provider.text_chat(prompt=…, system_prompt=…) -> LLMResponse`，`astrbot/core/provider/provider.py:96` |
+| 取文本 | **优先** `LLMResponse.result_chain.get_plain_text()`（`astrbot/core/message/message_event_result.py:149`）；`completion_text` 已被上游标为「已过时，推荐 result_chain」，只作兜底 |
+
+四条硬约束（都是「不做就会变成更难查的问题」）：
+
+1. **必须有超时**（`heartbeat_agent_timeout_ms`，默认 15000）。这次调用是从
+   **健康复检循环**里 await 出来的；模型端点卡住 = 探测器本身停摆，
+   而探测器停摆时链路到底通不通就再也没人知道了。
+2. **取不到模型 / 调用抛错 / 超时 / 返回空 ⇒ 一律退回固定文案**，不静默跳过。
+   连通性通知的价值是「用户知道链路断了」，措辞是次要的——绝不能因为模型挂了就漏报。
+   空的 `heartbeat_agent_prompt` 同样按「用不了」处理（**不**把空提示词丢给模型）。
+3. **`sanitize_agent_notice` 洗过再发**：去掉 `**` / `__` / 反引号（IM 不渲染 Markdown）、
+   把换行与连续空白压成一行、截断到 `heartbeat_agent_max_chars`（默认 200）并补省略号。
+   这是**有限的**清理，不当通用 Markdown 解析器用——那会开始猜内容。
+4. **提示词模板由配置给出**（`heartbeat_agent_prompt`），占位符
+   `{kind}` / `{kind_cn}` / `{conversation}` / `{error}` / `{minutes}`；
+   未知占位符**原样保留**，便于发现写错（沿用 `lib/proactive.js` 的同款约定）。
 
 ---
 

@@ -789,6 +789,8 @@ class Main(Star):
         self._hb_heartbeat_ms = 15000          # 由 /health 的 heartbeatMs 刷新，两侧同口径
         self._proactive_task: asyncio.Task[None] | None = None
         self._proactive_cursor = 0
+        #: agent 模式「没有可用模型」只警告一次，避免每轮刷屏。
+        self._agent_warned = False
 
     # ---- 生命周期 ----------------------------------------------------
 
@@ -820,9 +822,9 @@ class Main(Star):
             self._proactive_loop(), name="dsh_relay.proactive"
         )
         if self._heartbeat_mode() == hb.NOTIFY_AGENT:
-            logger.warning(
-                "[dsh_relay] heartbeat_notify=agent 尚未接线（需先核实 AstrBot 的 LLM 入口），"
-                "本版按 fixed 的固定文案播报"
+            logger.info(
+                "[dsh_relay] heartbeat_notify=agent：心跳文案将由对话模型组织；"
+                "取不到模型或调用失败时退回固定文案（不会因此漏报）。"
             )
         try:
             info = await transport.health()
@@ -1154,13 +1156,16 @@ class Main(Star):
                 continue
 
             if kind == contract.EVENT_APPROVAL_REQUIRED:
-                async for result in self._on_approval_required(event, item):
-                    yield result
+                # ⚠️ 是 await，不是 async for：这个处理器**只发不 yield**
+                # （v0.8.7 及以前写成 async for，于是「协程被当异步生成器」→
+                # TypeError: 'coroutine' object is not async iterable，
+                # 整条 turn 的回帖就此中断，而且审批请求永远到不了用户手上。
+                # 对应测试：scripts/test-im-commands.py 的「审批请求真的送达」。
+                await self._on_approval_required(event, item)
                 continue
 
             if kind == contract.EVENT_QUESTION_REQUIRED:
-                async for result in self._on_question_required(event, item):
-                    yield result
+                await self._on_question_required(event, item)
                 continue
 
             if kind == contract.EVENT_QUESTION_RESOLVED:
@@ -1201,8 +1206,12 @@ class Main(Star):
 
     async def _on_approval_required(
         self, event: AstrMessageEvent, frame: dict[str, Any]
-    ) -> AsyncIterator[Any]:
-        """把审批请求转达给用户，并把 ``code → callId`` 记进本地表。"""
+    ) -> None:
+        """把审批请求转达给用户，并把 ``code → callId`` 记进本地表。
+
+        没有返回值、也**不 yield**：提示由 ``event.send`` 直接发出。
+        调用方必须 ``await``（见 ``_consume_turn`` 里的说明）。
+        """
         if not self._cfg("approval_enabled", True):
             return
         code = str(frame.get("code") or "").strip()
@@ -1238,12 +1247,14 @@ class Main(Star):
 
     async def _on_question_required(
         self, event: AstrMessageEvent, frame: dict[str, Any]
-    ) -> AsyncIterator[Any]:
+    ) -> None:
         """把宿主的提问转达给用户，并把 ``code → callId`` 记进本地表（契约 §16）。
 
         与审批转达的差别只有载荷（这里是 ``questions[]``，不是单个工具名），
         外加一条本地约束：**答案要能逐题补交** —— 一次带多个问题时，很难要求
         用户在一条命令里把所有题都答完。
+
+        同样**不 yield**：调用方必须 ``await``。
         """
         if not self._cfg("questions_enabled", True):
             return
@@ -1971,14 +1982,19 @@ class Main(Star):
     async def _notify_heartbeat(self, umo: str, kind: str, entry: dict[str, Any]) -> None:
         """播报一次连通性跃迁。
 
-        ⚠️ 这里**只发固定文案**。``heartbeat_notify=agent``（由模型决定说不说、说什么）
-        还没接线：那需要先核实 AstrBot 的 LLM 调用入口，按本项目惯例不接受「大概是」。
-        该模式若被手工写进配置，加载期会 warn 一次并退化为固定文案——不假装它已生效。
+        ``heartbeat_notify=fixed`` / ``offline-only`` 用 ``format_fixed_notice`` 的固定文案；
+        ``=agent`` 时由模型组织措辞（见 ``_agent_notice``），**失败一律退回固定文案**——
+        连通性通知的价值是「用户知道链路断了」，措辞好不好看是次要的，
+        绝不能因为模型挂了或超时就把这条通知丢掉。
         """
         offline_ms = _now_ms() - int(entry.get("offline_since") or 0)
-        text = hb.format_fixed_notice(
-            kind, conversation=umo, error=str(self._bridge_error or ""), offline_ms=offline_ms,
-        )
+        text = ""
+        if self._heartbeat_mode() == hb.NOTIFY_AGENT:
+            text = await self._agent_notice(umo, kind, entry, offline_ms=offline_ms)
+        if not text:
+            text = hb.format_fixed_notice(
+                kind, conversation=umo, error=str(self._bridge_error or ""), offline_ms=offline_ms,
+            )
         if not text:
             return
         sent = await self.push_to_session(umo, text)
@@ -1986,6 +2002,77 @@ class Main(Star):
             f"[dsh_relay] 心跳播报（{kind}）-> {umo}："
             f"{'已发送' if sent else '未匹配到平台，未发出'}"
         )
+
+    async def _agent_notice(
+        self, umo: str, kind: str, entry: dict[str, Any], *, offline_ms: int
+    ) -> str:
+        """让模型把这次跃迁说成一句人话。返回空串 = 用不了，调用方退回固定文案。
+
+        入口已在 AstrBot 源码里核实（v0.8.8）：
+
+          * ``Context.get_using_provider(umo) -> Provider | None``
+            （``astrbot/core/star/context.py:425``）；
+          * ``await provider.text_chat(prompt=…) -> LLMResponse``
+            （``astrbot/core/provider/provider.py:96``）；
+          * 取文本优先 ``LLMResponse.result_chain.get_plain_text()``
+            （``astrbot/core/message/message_event_result.py:149``）——``completion_text``
+            已被上游标为「已过时，推荐 result_chain」，这里只作兜底。
+
+        ⚠️ **必须有超时**：这个协程是从 ``_health_loop`` 里 await 出来的，
+        模型端点卡住就等于整条健康复检循环停摆——而健康复检正是 A 的探测器本身。
+        用 ``heartbeat_agent_timeout_ms`` 兜住，超时按「用不了」处理。
+        """
+        try:
+            provider = self.context.get_using_provider(umo)
+        except Exception as exc:  # noqa: BLE001 - 取 provider 失败不该影响播报
+            logger.warning(f"[dsh_relay] 取对话模型失败：{exc}；心跳文案退回固定文案")
+            return ""
+        if provider is None:
+            if not self._agent_warned:
+                self._agent_warned = True
+                logger.warning(
+                    "[dsh_relay] heartbeat_notify=agent 但没有可用的对话模型"
+                    "（context.get_using_provider 返回 None）；心跳文案退回固定文案。"
+                    "这条只警告一次，避免每轮刷屏。"
+                )
+            return ""
+
+        prompt = hb.render_agent_prompt(
+            str(self._cfg("heartbeat_agent_prompt", "") or ""),
+            kind=kind,
+            conversation=umo,
+            error=str(self._bridge_error or ""),
+            offline_ms=offline_ms,
+        )
+        system = str(self._cfg("heartbeat_agent_system_prompt", "") or "")
+        if not prompt.strip():
+            # 模板为空时别把空提示词丢给模型（那只会得到一句无关的话，还可能被发出去）。
+            logger.warning("[dsh_relay] heartbeat_agent_prompt 为空，无法组织文案；退回固定文案")
+            return ""
+        timeout_ms = max(1000, int(self._cfg("heartbeat_agent_timeout_ms", 15000) or 15000))
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=system),
+                timeout=timeout_ms / 1000.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - 模型失败一律退回固定文案
+            logger.warning(f"[dsh_relay] agent 心跳文案调用失败（{type(exc).__name__}: {exc}）；退回固定文案")
+            return ""
+
+        # 优先 result_chain（上游推荐），completion_text 只作兜底。
+        raw = ""
+        chain = getattr(response, "result_chain", None)
+        if chain is not None:
+            with contextlib.suppress(Exception):
+                raw = str(chain.get_plain_text() or "")
+        if not raw:
+            raw = str(getattr(response, "completion_text", "") or "")
+        text = hb.sanitize_agent_notice(
+            raw, int(self._cfg("heartbeat_agent_max_chars", 200) or 200)
+        )
+        if not text:
+            logger.warning("[dsh_relay] agent 心跳文案为空或不可用；退回固定文案")
+        return text
 
     async def _restore_proactive_cursor(self) -> None:
         """恢复主动消息的 ack 游标。

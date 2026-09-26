@@ -203,6 +203,73 @@ def _() -> None:
     assert hb.frame_miss_ms_of(0, 2) == 2000
 
 
+print("\nrender_agent_prompt")
+
+
+@test("占位符按这次跃迁的事实替换")
+def _() -> None:
+    text = hb.render_agent_prompt(
+        "{kind_cn}|{kind}|{conversation}|{error}|{minutes}",
+        kind=hb.KIND_OFFLINE, conversation="default:GroupMessage:1",
+        error="HTTP 503", offline_ms=125_000,
+    )
+    assert text == "中断|offline|default:GroupMessage:1|HTTP 503|2", text
+
+
+@test("恢复时 kind_cn 是「恢复」而不是「中断」")
+def _() -> None:
+    text = hb.render_agent_prompt("{kind_cn}", kind=hb.KIND_RECOVERED)
+    assert text == "恢复", text
+
+
+@test("未知占位符原样保留（便于发现写错，而不是静默变成空）")
+def _() -> None:
+    assert hb.render_agent_prompt("{没有这个}", kind=hb.KIND_OFFLINE) == "{没有这个}"
+
+
+@test("缺省值不炸：不传 conversation/error 时替换成空串")
+def _() -> None:
+    assert hb.render_agent_prompt("[{conversation}][{error}]", kind=hb.KIND_OFFLINE) == "[][]"
+
+
+print("\nsanitize_agent_notice")
+
+
+@test("去掉 Markdown 裸标记（IM 端不渲染 Markdown）")
+def _() -> None:
+    assert hb.sanitize_agent_notice("**注意**：`桥接` 中断了。__真的__") == "注意：桥接 中断了。真的"
+
+
+@test("压掉换行与连续空白（一条通知不该是多行报告）")
+def _() -> None:
+    assert hb.sanitize_agent_notice("断线了\n\n  别急\t稍后自动恢复 ") == "断线了 别急 稍后自动恢复"
+
+
+@test("超长截断并补省略号")
+def _() -> None:
+    text = hb.sanitize_agent_notice("啊" * 50, max_chars=10)
+    assert len(text) == 10, len(text)
+    assert text.endswith("…"), text
+
+
+@test("刚好等于上限时不截断")
+def _() -> None:
+    assert hb.sanitize_agent_notice("啊" * 10, max_chars=10) == "啊" * 10
+
+
+@test("空输入返回空串（调用方据此退回固定文案）")
+def _() -> None:
+    assert hb.sanitize_agent_notice("") == ""
+    assert hb.sanitize_agent_notice("   \n ") == ""
+    assert hb.sanitize_agent_notice(None) == ""  # type: ignore[arg-type]
+
+
+@test("上限非法（0/负数）退化为 1，不崩不返回原文")
+def _() -> None:
+    assert hb.sanitize_agent_notice("啊啊啊", max_chars=0) == "…"
+    assert hb.sanitize_agent_notice("啊啊啊", max_chars=-5) == "…"
+
+
 print(f"\n通过 {_passed} 项，失败 {len(_failed)} 项")
 if _failed:
     print(f"失败项：{'、'.join(_failed)}")

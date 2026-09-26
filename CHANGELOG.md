@@ -1,5 +1,79 @@
 # 更新日志
 
+## v0.8.8 — 2026-09-26
+
+> 心跳 `agent` 模式接线（v0.8.7 里唯一留空的功能位），外加一处**用户可见的严重缺陷**。
+> **`bridgeVersion` 保持 `6`**：本版只动 IM 侧，两侧**可以**不同时升级
+> （v0.8.7 的 DSH 侧配 v0.8.8 的 IM 侧是合法的）。
+
+### 新增
+
+- **心跳播报的 `agent` 模式**：由对话模型把「链路断了/恢复了」组织成一句人话，
+  而不是固定文案。新增配置 `heartbeat_agent_prompt`（模板，含
+  `{kind}` / `{kind_cn}` / `{conversation}` / `{error}` / `{minutes}`）、
+  `heartbeat_agent_system_prompt`、`heartbeat_agent_max_chars`（200）、
+  `heartbeat_agent_timeout_ms`（15000）。`heartbeat_notify` 的选项里补上 `agent`。
+  **分工是刻意的**：要不要播报由 `should_notify` 确定性判定，模型只负责措辞——
+  把判定也交给模型，就会出现「它觉得这次不重要就不说了」，而连通性漏报的代价
+  远大于措辞难看。契约 §17.4.1 记录了入口证据与四条硬约束。
+- AstrBot 的 LLM 入口**在源码里核实完毕**（此前只有「大概是 `context` 上的
+  provider 接口」）：`Context.get_using_provider(umo)`（`astrbot/core/star/context.py:425`）
+  → `await Provider.text_chat(prompt=…, system_prompt=…)`（`provider.py:96`）
+  → 文本优先 `LLMResponse.result_chain.get_plain_text()`（`message_event_result.py:149`），
+  `completion_text` 已被上游标为过时、只作兜底。三条只有读源码才知道的事：
+  provider 取不到时返回 `None`（不抛异常）、`text_chat` **没有内置超时**、
+  `should_call_llm` **不拦**插件自己发起的请求。证据写进
+  `docs/astrbot-side-capabilities.md` §3.6。
+
+### 修复
+
+- **审批请求与问答请求根本到不了用户手上（v0.8.7 及以前一直如此）。**
+  `_on_approval_required` / `_on_question_required` 标注为 `AsyncIterator` 却**完全没有
+  `yield`**，因此它们是**协程**；而 `_consume_turn` 里的调用点写的是
+  `async for result in self._on_...(...)`。实测报错：
+
+  ```
+  TypeError: 'async for' requires an object with __aiter__ method, got coroutine
+  ```
+
+  后果有两层：①审批/问答提示永远送不到用户；②这个异常从 `_consume_turn` 一路穿过
+  `_handle_task` 与 `on_bridge_message`，**打断整条 turn 的回帖**。而审批 waterfall
+  本身**没有超时**（契约 §7.2），于是 agent 会一直挂在等一个不可能到的答案上。
+  修法：两个处理器签名改为 `-> None`，两处调用点改为 `await`；
+  并加一条从两侧钉住形状的测试（`inspect.isasyncgenfunction` 必须为假），
+  谁要是给处理器加了 `yield` 而没同步改调用点，立刻出声。
+  **类型注解 `AsyncIterator` 不产生任何运行时保证**——这条已补进
+  `docs/astrbot-side-capabilities.md` §3.7，别再拿注解当契约。
+- `agent` 模式下若 `heartbeat_agent_prompt` 为空，**不把空提示词丢给模型**
+  （那只会得到一句无关的话，还可能被发出去），按「用不了」处理并退回固定文案。
+
+### 变更
+
+- **假宿主拆成共用模块并扩到全量接线**：新增 `scripts/_fake_astrbot.py`
+  （桩 + 假 transport + 假事件，两处共用）与 `scripts/test-im-commands.py`（33 项）。
+  覆盖：指令分发（前缀匹配、白名单、`should_call_llm`/`stop_event` 接管标记）、
+  六个 `/dsh` 指令的路由、流式回帖与 `turn/end` 收敛（`message/final` 权威、
+  `gap` 提示、未知帧忽略、投递失败文案、**先连流再投递**的顺序）、
+  审批链（提示送达、approve/reject、重复回执、`approval/resolved` 销号、
+  `approval_enabled=false`）、问答链（逐题补交、答齐才碰网桥、自由文字落 `custom`、
+  无效验证码）、卡片渲染（**任一片失败就整条退回纯文本**）。
+- `scripts/test-im-heartbeat.py` 同期扩到 32 项（新增 agent 模式 10 项）。
+- **假宿主的配置默认值改为从 `_conf_schema.json` 直接读**，不再手抄一份：
+  手抄的那份必然漂移，而漂移的表现是「测试里提示词是空的、生产里不空」这种
+  只在测试里存在的假象（第一版就是这么写错的）。
+- 新增**元测试**：逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名。
+  桩写错时上面所有用例都会给出看似合理的假结论——真的踩过一次：假 `fork` 的参数名
+  写成 `upto_turn`（真名 `at_seq`），于是处理器的 `except Exception` 把 `TypeError`
+  吞掉、只回一句「分支失败」，测试看到的是「没有任何调用」。
+- 终验：`npm test` 共 **236 项**（此前 183 项）。
+
+### 文档
+
+- 契约 §17.4 改写 + 新增 §17.4.1（`agent` 模式的入口证据与四条硬约束）；
+  `docs/astrbot-side-capabilities.md` 新增 §3.6（LLM 入口，逐条 `文件:行号`）与
+  §3.7（异步生成器 vs 协程的形状陷阱）。
+- `docs/PLAN-heartbeat.md` §8 的 Q3/Q5 结案，§10 补记两文件假宿主与元测试。
+
 ## v0.8.7 — 2026-09-26
 
 > 心跳与主动消息。两半可以分别上线：只有 A 时 B 不发，只有 B 时 A 不报。
