@@ -110,6 +110,7 @@ curl.exe -i -H "Host: 127.0.0.1:3080" http://127.0.0.1:3080/astrbot-relay/panel/
   （在 `@deepseek-ai/*` 里按 `provide('slots')` 搜不到，那些包是打包产物）。
   宿主半边与契约部分不受影响；但**第一次装上如果设置页里没有「星驿」分区，
   第一个要看的就是这两行 inject**——那是唯一一处「抄来的」地方。
+* ✅ **已真机验证（2026-09-26）**：那份「抄来的」`inject` 声明**实际可用**——设置页确实出现「星驿」分区，显示契约版本 6、4 条对话、IM 在线、四条会话映射齐全。所以 `dsh.client.inject` 那两行 + 客户端 `inject = ['slots']` 足以注册 `settings.section`。**但 `slots` 由哪个包 provide 仍未静态确认**（`@deepseek-ai/*` 是打包产物，搜不到 `provide('slots')`）——**升级 DSH 宿主版本时，这里仍是第一个复检点**。
 * **客户端半边只在 Web 平台可用。** 声明里写死了 `platform: "web"`；
   别的平台没有这个界面（宿主半边不受影响）。
 * **面板路由不进契约常量表。** 它用独立的 `PANEL_ROUTE`（`lib/panel.js`），

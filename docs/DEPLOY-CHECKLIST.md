@@ -22,16 +22,24 @@
 
 | 本侧 | 要求 |
 |---|---|
-| AstrBot 插件 | `astrbot_plugin_dsh_relay` ≥ **0.8.9**（`card` 修复与审批/问答送达修复都在里面） |
-| DSH 插件 | `dsh-astrbot-relay` ≥ **0.8.7** |
+| AstrBot 插件 | `astrbot_plugin_dsh_relay` ≥ **0.9.2**（本批交付版；`card` 修复与审批/问答送达修复都在里面） |
+| DSH 插件 | `dsh-astrbot-relay` ≥ **0.9.2**（与 IM 侧同批发布，建议两边同版） |
 
 **`bridgeVersion` 必须两边都是 `6`。** IM 侧启动时会拿 `/health` 的
 `bridgeVersion` 逐字比对，不匹配**拒绝启用**（不是降级）——这是刻意的：
 v5 的 IM 不会去调 `/proactive`，于是 DSH 侧的 `online` 闸门永远不开、
 自主心跳永不触发，**且没有任何报错**。
 
-> 本版之后只有 IM 侧改动过（v0.8.8 / v0.8.9 都只动 IM），所以
-> **v0.8.9 的 IM + v0.8.7 的 DSH 是合法组合**；反之桥接端更高也一样。
+> 历史合法组合：v0.8.8 / v0.8.9 只动 IM，所以 **0.8.9 的 IM + 0.8.7 的 DSH** 也成立；
+> **本批 0.9.2 两侧同源发布，直接两边都装 0.9.2，省掉配对判断。**
+> **AstrBot 侧是「手工拷贝副本」，不是 git 部署。** 2026-09-26 实测：DSH 侧
+> `~/.dsh/profiles/web/node_modules/dsh-astrbot-relay` 是指向插件的 junction，
+> 仓库一 `git pull` 它立刻变新版；而 AstrBot 侧 `data/plugins/astrbot_plugin_dsh_relay`
+> **没有 `.git`**（是拷贝进去的），**升级必须手工覆盖文件**。
+> 只改版本号不够：`contract.py` 的 `BRIDGE_VERSION` 与 `heartbeat_state.py` 这类
+> **新增文件**一旦漏掉就会**静默失能**（心跳/在线状态哑掉，两侧都不报错）。
+> 0.8.4 → 0.9.2 就是这样：`heartbeat_state.py` 整个文件缺失，补齐后才恢复「IM 在线」。
+> 手法见 §3.3。
 
 ### 1.2 端口与网络方向
 
@@ -56,7 +64,7 @@ v5 的 IM 不会去调 `/proactive`，于是 DSH 侧的 `online` 闸门永远不
 ### 2.1 装包
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.8.9.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.9.2.tgz
 dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 ```
 
@@ -120,7 +128,7 @@ curl.exe -s -H "Authorization: Bearer $TOKEN" "$BASE/astrbot-relay/health"
 ### 3.1 装包
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.8.9.zip -DestinationPath <AstrBot 目录>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.9.2.zip -DestinationPath <AstrBot 目录>\data\plugins\
 ```
 
 然后在 AstrBot WebUI 的插件页启用。
@@ -168,6 +176,18 @@ python scripts/verify-bridge-live.py          # 或 npm run verify:bridge
 它从 profile 的 patch 里读 `token` / `pathPrefix` / `cwd`（换机器不用改脚本），
 检查：路由挂没挂、`bridgeVersion` 是不是 6、几条路由是否都 200、
 鉴权是否 fail-closed、`state.json` 是否已生成。**token 只打 sha256 前 12 位**，不泄露明文。
+
+### 3.3 升级：手工同步四步（别指望 `git pull`）
+
+1. **比对**：对 AstrBot 插件目录与仓库 `astrbot_plugin_dsh_relay/` 逐文件
+   SHA256（`Get-FileHash -Algorithm SHA256`），列出 same / DIFF / 缺失三类。
+2. **备份**：先整目录复制一份带日期的 `_bak_..._<日期>`，回滚零成本。
+3. **复制**：只搬 DIFF 与缺失的文件；**新增文件尤其别漏**
+   （`heartbeat_state.py` 就是例子）。
+4. **验证**：`python -m py_compile *.py` 全过 → 清 `__pycache__` →
+   在 AstrBot WebUI **重载插件**（不是「保存配置」，原因见 §12 第 2 条）。
+
+判据不看版本号，看活体证据：DSH 面板里契约版本一致、IM「在线」且上次轮询在几秒内。
 
 ---
 
@@ -448,7 +468,7 @@ proactivePrompt: '只输出 {silent}'
 
 ## 12. 首次真机部署踩到的坑（都值得记住）
 
-### 14.1 404：DSH 侧**根本没装**插件
+### 12.1 404：DSH 侧**根本没装**插件
 
 现象：AstrBot 每 5 秒一条 `[dsh_relay] 主动消息轮询失败：HTTP 404`，
 而 `GET /` 回 401（DSH 本身活着）。
@@ -458,7 +478,7 @@ proactivePrompt: '只输出 {silent}'
 修法就是 §2.1 那一步；顺带记住 **`dsh plugin add` 会自动 reconcile
 `dsh.profile.bundles`**，不用手改 `package.json`。
 
-### 14.2 401：改了 AstrBot 的配置文件，但**它没重读**
+### 12.2 401：改了 AstrBot 的配置文件，但**它没重读**
 
 现象：404 消失、变成 `unauthorized`，而磁盘上两侧 token **完全一致**。
 
@@ -470,20 +490,20 @@ proactivePrompt: '只输出 {silent}'
 * **点「保存配置」反而危险**：WebUI 会把**它内存里那份旧值**写回去，
   把你在文件里改的 token 冲掉。
 
-### 14.3 `dsh --profile web --dump-config` **会把 token 明文打到终端**
+### 12.3 `dsh --profile web --dump-config` **会把 token 明文打到终端**
 
 它就是打印解析后的完整配置。要用它核验可以，但**别把输出贴到任何地方**。
 （顺带记一个与直觉相反的事实：这个命令会重写 `cordis.yml`，但 `cordis.yml`
 仍是空列表 `[]`，**不落盘 token** —— 泄漏点是终端，不是文件。）
 
-### 14.4 profile 的 `file:` 依赖**别指向构建产物**
+### 12.4 profile 的 `file:` 依赖**别指向构建产物**
 
 `dsh plugin add <tgz>` 会把**绝对路径**记进 `package.json`。若那个路径在
 `dist/` 之类的构建输出目录里，下次发版 `rmSync(dist)` 一跑，这个依赖就悬空，
 profile 一旦 `pnpm install`（连其它插件一起）就会失败。
 把 tgz 复制进 profile 自己目录（如 `profiles/web/vendor/`）再改指相对路径即可。
 
-### 14.5 读 DSH 会话存档：它是**多帧 zstd**
+### 12.5 读 DSH 会话存档：它是**多帧 zstd**
 
 `session.v3.jsonl.zstd` 是 append-only 的多帧拼接。`zstdDecompressSync`
 **只解第一帧**（16 KB 的文件只解出 213 字节），会让人误以为「存档里只有会话头、
