@@ -25,7 +25,7 @@ from __future__ import annotations
 #:     「另做一次改指」当时并无对应路由（rebind 的入参是工作区，语义是新建）。
 #:     同样**没有**新增错误码：会话不存在→``not_found``（404），工作区不含该会话
 #:     与「有投递在途」→``agent_busy``（409）。
-BRIDGE_VERSION = "4"
+BRIDGE_VERSION = "5"
 
 #: 路由。契约 §3。相对 AstrBot 侧配置项 ``bridge_url``。
 ROUTE_MESSAGE = "/message"

@@ -2,7 +2,7 @@
 
 > 本文件是 `dsh-astrbot-relay/lib/index.js` 内注释所引用的落地依据。
 > 目标版本：0.8.5（HEAD 基线 14859aa / 0.8.4）。
-> bridgeVersion 变动见 §6。
+> bridgeVersion 变动见 §7。
 
 ## 1. 背景：一条审批链能自愈、一条问答链卡死
 
@@ -103,24 +103,39 @@ host.on('user-questions/request')
    现统一改为 `drainPending(bridge, 'retarget')` —— 先逐张结算（审批 `REJECTED`、问答 `null`），
    再换表。见 §3 与源码 `drainPending` 的注释。
 
-## 5. 未开工（本版剩余）
+## 5. 进度（本版剩余项）
 
-1. IM 侧 `main.py` 补 `user-questions` 处理（当前只认 `APPROVAL_REQUIRED/RESOLVED`，
-   且 `send_approval` 只发四字段，这是 QQ 侧静默的结构性原因）；
-   `_conf_schema.json` 只补 `questionsEnabled` / `questionTimeoutMs`（已落地）。
-   `waitTimeoutMs` **刻意不同步**：它是 DSH 侧插件配置（`index.js` 的 `Schema.number()`，
-   消费者为 `openInflight`），IM 侧 `main.py` 无任何读取点，加进来就是死配置。
-2. 测试：答案器正常路径、超时路径（`ASK_ABORTED`）、`drainPending` 路径，
-   以及 IM 侧卡片渲染。
-3. 部署侧同步与定版。
+1. ~~IM 侧 `main.py` 补 `user-questions` 处理~~ —— **已落地**。本版提交里已含
+   `send_answer` / `_on_question_required` / `_issue_question_code` / `_handle_answer_command`，
+   以及 `contract.py` 的 `ROUTE_ANSWER` / `COMMAND_ANSWER` / `EVENT_QUESTION_REQUIRED` /
+   `EVENT_QUESTION_RESOLVED`（两侧由 `check-contract-parity.mjs` 对齐）。
+   仍然有效的一条附注：`waitTimeoutMs` **刻意不同步**进 IM 侧 Schema——它是 DSH 侧插件配置
+   （`index.js` 的 `Schema.number()`，消费者为 `openInflight`），IM 侧 `main.py` 无任何读取点，
+   加进去就是死配置。
+2. 测试：~~答案器正常路径、超时路径（`ASK_ABORTED`）、`drainPending` 路径~~ —— **已落地**，
+   见 `scripts/test-questions.mjs`（15 项纯函数）与 `scripts/test-question-chain.mjs`
+   （15 项：假宿主驱动 `apply()`，覆盖 `/answer` 校验阶梯、正常回执与一次生效、
+   无效条目不被消费、超时、预中止与运行期 abort、`questionsEnabled=false` 交还框架、
+   `bridgeByAgent` 反查不到 fail-open、`/session/adopt` 的 `drainPending`）。
+   **IM 侧卡片渲染仍未覆盖**（AstrBot 侧，需另配无 astrbot 依赖的渲染模块）。
+3. 部署侧同步与定版 —— **仍未做**。
 
-## 6. 已知差异（待查）
+## 6. 已结案：fork 的 `inheritedEventCount` 不是副本事件总数
 
-fork 副本 `inheritedEventCount=766` 与实测共有 768 条事件仍差 2；
-副本比原会话少 6 条事件、多 2 条 `session/end-seed`。
+原先记的「差 2」是把两个不同的量相减：`inheritedEventCount` 是**继承前缀长度**
+（= 刀口在源日志里的下标），副本总数 = 继承数 + 子会话自有事件，而自有事件**至少**含
+宿主必然追加的一条 `session/end-seed`
+（`@deepseek-ai/dsh-session/lib/types/index.js:468-471`）。差值 ≥ 1 属设计如此。
 
-## 7. 版本判断
+要验的是这条不变量（被 codec 强制，违反即抛 `SessionFormatError`）：
 
-- 新增 `user-questions` 等**增量可选端点**：依 `BRIDGE-CONTRACT.md` §10，可维持 `bridgeVersion=4`；
+> 最后一条带 `data.inherited === true` 的 `session/end-seed`，其 `seq` == 该会话的 `inheritedEventCount`。
+
+依据 `dsh-session-persistence-jsonl/lib/worker.cjs:8795`。完整证据链见契约 §14.5。
+
+## 7. 版本判断（已定：升 5，随 v0.8.6 发布）
+
+- 新增 `user-questions` 等**增量可选端点**：依 `BRIDGE-CONTRACT.md` §10，单看这一项可维持 `bridgeVersion=4`；
 - 但「`attaching` 由 whenIdle 释放」改为「由 turn/end 结算」**修改了既有字段语义**，
-  倾向递增到 `5`。待第 5 节落地、双端跑通后一次性定版，避免中间态对外宣称新版本。
+  按 §10「修改既有字段语义**必须**递增」→ **定为 `5`**。
+  代价与前三次相同：**v4 与 v5 不能混合部署**，升级必须两侧同时发布，不存在灰度窗口。

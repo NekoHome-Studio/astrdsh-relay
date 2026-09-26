@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto'
  *     同样**没有**新增错误码：会话不存在→`not_found`（404），工作区不含该会话
  *     与「有投递在途」→`agent_busy`（409）。
  */
-export const BRIDGE_VERSION = '4'
+export const BRIDGE_VERSION = '5'
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({

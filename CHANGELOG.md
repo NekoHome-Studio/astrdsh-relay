@@ -1,5 +1,56 @@
 # 更新日志
 
+## v0.8.6 — 2026-09-26
+
+> 本版**合并了原计划的 v0.8.5**：那批改动（在途投递单 + 用户问答链）此前只进过 `main`，
+> 既未定版也无产物，因此条目在这里一并给出。
+
+### 新增
+
+- **用户问答通道**（`ask_user_question`）：与审批**严格分离**的双通道。`bridge.questions`
+  与 `bridge.approvals` 各存各的，`callId` 前缀不同（`im-q-` / `im-`）。新增下行事件
+  `question/required` / `question/resolved`、新增端点 `POST /answer`（IM 代答）、新增配置
+  `questionsEnabled`（默认 `true`）与 `questionTimeoutMs`（默认 `300000`）；IM 侧新增
+  `/dsh answer <验证码>` 指令。契约 §16。
+- **在途投递单（inflight ticket）**：把「一次已接受的投递」实体化，`queue` 的每一份额度
+  都对应一张单子，由 `turn/end`（权威路径）或等待态超时（fail-closed 兜底）结算，
+  `whenIdle` 退居兜底。新增配置 `waitTimeoutMs`（默认 `300000`；设 `0` 关闭超时兜底）。
+- `/health` 新增 `pending[]`：把「在等一个可能不到来的答案」（`questions > 0` 且
+  `stuckAt = 0`）与「闸门已放、但不保证 turn 真的闭合」（`stuckAt > 0`）分开列出。
+  这两种状态在旧 `/health` 上长得一模一样，是当时最难判的一步。
+
+### 修复
+
+- **问答链在 `signal` 预中止时永久悬挂**（v0.8.5 引入）。`askQuestions` 里 abort 判定排在
+  `bridge.questions.set(callId, …)` **之前**，而唯一结算出口 `finish` 的第一句是
+  `if (!bridge.questions.has(callId)) return` —— 预中止时表里还没有这个 callId，
+  于是 `finish` 直接早退，Promise 既不 resolve 也不 reject，turn 永久不闭合。
+  **这比本版要修的队列死锁更糟**：那个至少能从 `409 agent_busy` 上看出症状，这个连痕迹都没有。
+  修法：把「建表项 + 挂定时器」提到 signal 判定之前，并加 `announced` 标记，
+  使从未对外宣告过的问答不再补发 `question/resolved` 孤儿帧。
+  回归测试：`scripts/test-question-chain.mjs` 的「signal 已 abort → 立即 reject」。
+
+### 变更
+
+- **`bridgeVersion` 4 → 5**：`attaching` 的释放条件由「`whenIdle` 释放」改为「`turn/end`
+  结算」，属**既有字段语义**变更，按契约 §10 必须递增。**v4 与 v5 不能混合部署**，
+  两侧必须同时升级。
+- 问答链的三个纯函数（`questionError` / `renderQuestion` / `normalizeAnswers`）抽到
+  `lib/questions.js`：该模块零外部 import，于是能在**不安装 dsh 依赖**的前提下单测
+  （与 `location.js` / `session-title.js` / `state.js` 同一套路）。行为零变化。
+- 新增两道测试闸门并接进 `npm test`：`scripts/test-questions.mjs`、
+  `scripts/test-question-chain.mjs`（后者用假宿主驱动 `apply()`，不需要真实 dsh 运行时）。
+
+### 文档
+
+- 契约 §14.1 注释更正 + 新增 §14.5：**`inheritedEventCount` 是继承前缀长度，不是副本的事件总数。**
+  此前按「副本共 768 条 vs 报出 766，差 2」去对账，方向是错的：副本总数 = 继承数 + 子会话
+  自有事件，而自有事件**至少**含宿主自动追加的一条 `session/end-seed` 标记
+  （`@deepseek-ai/dsh-session/lib/types/index.js:468`），故差值 ≥ 1 属设计如此。
+  要验的不变量是「**最后一条带 `inherited: true` 的标记，其 `seq` == `inheritedEventCount`**」——
+  该式被 `dsh-session-persistence-jsonl/lib/worker.cjs:8795` 强制执行，违反会抛 `SessionFormatError`。
+  纯文档改动，无行为面变化。
+
 ## v0.8.4 — 2026-09-22
 
 ### 修复

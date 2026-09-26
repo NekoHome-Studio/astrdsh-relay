@@ -44,6 +44,7 @@ import {
   APPROVAL_CODE_LENGTH, APPROVAL_OUTCOME, APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
 } from './contract.js'
 import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
+import { normalizeAnswers, questionError, renderQuestion } from './questions.js'
 import { applySessionTitle, TITLE_MAX_BYTES, TITLE_RESULT, titleByteLength } from './session-title.js'
 import { loadState, resolveStatePath, saveState } from './state.js'
 
@@ -984,52 +985,9 @@ export function apply(ctx, config) {
     //      turn 自己能收尾，闸门（settleInflight）也就能自己放。
     //   4. `next` 的类型是 `() => Promise<...>`，**不接受参数** —— 想拒绝只能 throw。
 
-    /** 把失败统一包成带 `code` 的 Error（错误码全集见 dsh-user-questions 的 types）。 */
-    function questionError(code, detail) {
-      const error = new Error(detail ? `用户问答未完成：${code}（${detail}）` : `用户问答未完成：${code}`)
-      error.code = code
-      return error
-    }
-
-    /**
-     * 把 AskUserQuestionItem 投影成 IM 侧够用的载荷。
-     * 只带渲染必需字段（id / question / header / options / multiSelect）：
-     * 契约里的 `detail` / `intent` 是给 Web UI 的，转发过去只会让 IM 侧多写无用分支。
-     */
-    function renderQuestion(item) {
-      const options = (Array.isArray(item?.options) ? item.options : [])
-        .map((option) => ({
-          label: String(option?.label ?? ''),
-          description: option?.description ? String(option.description) : undefined,
-        }))
-        .filter((option) => option.label)
-      return {
-        id: String(item?.id ?? ''),
-        question: String(item?.question ?? ''),
-        header: item?.header ? String(item.header) : undefined,
-        multiSelect: !!item?.multiSelect,
-        options,
-      }
-    }
-
-    /**
-     * answers[] → AskUserQuestionAnswerItem[]，只留 {id, selected[], custom?}。
-     * fail-closed：筛完一条都不剩就当作「没答」，绝不能把空数组当成「用户选了空」塞回工具。
-     */
-    function normalizeAnswers(list) {
-      const out = []
-      for (const item of Array.isArray(list) ? list : []) {
-        const id = String(item?.id ?? '')
-        if (!id) continue
-        const selected = (Array.isArray(item?.selected) ? item.selected : [])
-          .map((label) => String(label))
-          .filter(Boolean)
-        const custom = typeof item?.custom === 'string' && item.custom.trim() ? item.custom : undefined
-        if (!selected.length && custom === undefined) continue
-        out.push(custom === undefined ? { id, selected } : { id, selected, custom })
-      }
-      return out
-    }
+    // 纯函数已抽到 `lib/questions.js`：那里零外部 import，因此能在普通 Node 下单测
+    // （`scripts/test-questions.mjs`）。本文件的问答链只剩**有副作用**的部分——
+    // 挂 waterfall、等答案、结算、路由。三个纯函数经下面的 import 使用，别在本文件里再抄一份。
 
     /**
      * 会话改指/接管前把在途的审批与问答**结算掉**。
@@ -1061,25 +1019,37 @@ export function apply(ctx, config) {
 
       return new Promise((resolve, reject) => {
         let timer = null
+        let announced = false
         // 单一幂等出口：answers 为真 → resolve，为 null → reject(ASK_ABORTED)。
         const finish = (answers, via) => {
           if (!bridge.questions.has(callId)) return   // 已由 /answer、abort 或 drainPending 结算
           bridge.questions.delete(callId)
           if (timer) clearTimeout(timer)
-          push(bridge.conversation, {
-            type: EVENT.QUESTION_RESOLVED, callId, via, answered: Array.isArray(answers),
-          })
+          // announced 为假 ⇒ 这次问答从未对外宣告过（只有「预中止」那一条路会这样）。
+          // 此时补一帧 question/resolved，只会让 IM 侧收到「有 resolved 没 required」的孤儿。
+          if (announced) {
+            push(bridge.conversation, {
+              type: EVENT.QUESTION_RESOLVED, callId, via, answered: Array.isArray(answers),
+            })
+          }
           if (Array.isArray(answers)) resolve({ answers })
           else reject(questionError('ASK_ABORTED', via))
         }
+
+        // ⚠️ 顺序有讲究：表项与定时器必须**先**建立，再判 signal。
+        // 反过来的话，`signal.aborted` 为真时 finish 会因为表里还没有 callId 而早退，
+        // 于是这个 Promise 既不 resolve 也不 reject —— turn 永久悬挂，
+        // 比本版要修的那个死锁更糟（那个至少还能从 409 agent_busy 上看出症状）。
+        // 对应测试：scripts/test-question-chain.mjs 的「signal 已 abort → 立即 reject」。
+        timer = setTimeout(() => finish(null, 'timeout'), timeoutMs)
+        timer.unref?.()
+        bridge.questions.set(callId, { expiresAt, settle: finish })
 
         if (request?.signal?.aborted) {
           finish(null, 'abort')
           return
         }
-        timer = setTimeout(() => finish(null, 'timeout'), timeoutMs)
-        timer.unref?.()
-        bridge.questions.set(callId, { expiresAt, settle: finish })
+        announced = true
         push(bridge.conversation, {
           type: EVENT.QUESTION_REQUIRED, callId, expiresAt,
           questions: questions.map(renderQuestion),

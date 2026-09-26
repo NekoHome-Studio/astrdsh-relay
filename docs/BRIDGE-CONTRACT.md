@@ -1,6 +1,6 @@
 # AstrDsh Relay（星驿）接口契约（草案 / 冻结候选）
 
-> 状态：**设计冻结候选**；当前 `bridgeVersion = "4"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
+> 状态：**设计冻结候选**；当前 `bridgeVersion = "5"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
 > `docs/astrbot-side-capabilities.md`、`docs/dsh-side-capabilities.md`）；
 > 标记 `【未核实】` 的条项**不得**在实现阶段当作既成事实使用。
 >
@@ -171,7 +171,7 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "4",
+  "bridgeVersion": "5",
   "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
   "conversations": 3
@@ -388,7 +388,7 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "4"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "5"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
@@ -412,6 +412,13 @@ DSH 内 agent 触发敏感工具
   在路由表上没有对应项（`/session/rebind` 的入参是工作区、语义是新建，改不了映射），
   所以 v3 的 fork 是**只建不接管**的半句。v4 把它补成整句；客户端若仍按 v3 理解，
   fork 之后就没有下一步可走。代价照旧：**v3 与 v4 不能混合部署**。
+- **v4 → v5 是第一次「改语义」而不是「加能力」。** 前三次升版都是新增路由或事件，
+  按「老客户端会不会坏」的口径本都可以不升；这一次不同：`attaching` 的释放条件从
+  「由 `whenIdle` 释放」改成「由 `turn/end` 结算」，`whenIdle` 退居兜底
+  （见 `dsh-astrbot-relay/lib/index.js` 的 `settleInflight` 及其三个调用点）。
+  同一份字段、不同的时序，正是上面「修改既有字段语义**必须**递增」所指的情形——
+  IM 侧若曾依赖「idle 才放闸」来安排下一封消息，升版后会观察到时序变化。
+  代价照旧：**v4 与 v5 不能混合部署**。
 
 ---
 
@@ -815,7 +822,7 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
   "ok": true,
   "sessionId": "im-5e6f7a8b",       // 新会话（子），id 由本端生成
   "sourceSessionId": "im-1a2b3c4d", // 源会话，原样保留
-  "inheritedEventCount": 137,       // = 刀口位置，复制过去的事件条数
+  "inheritedEventCount": 137,       // = 刀口位置（继承前缀长度），见 §14.5；**不是**副本的事件总数
   "workspaceId": "ws-…",            // 没能挂上去时为 null
   "cwd": "E:\\0d00\\…"              // 源会话的 cwd；存档头里缺席时为 null
 }
@@ -883,6 +890,49 @@ IM 侧只依赖 `count` / `returned` / `items[].{id,title,path}`；`items[].sess
 规格与 §13.4 完全相同：接管本事件、禁止默认 LLM（`should_call_llm(True)` + `stop_event()`，
 且 `yield` 必须在 `stop_event` 之前）。服务端给出的 `message` 已是完整句子，IM 侧**不得**再拼
 前缀；`200` + `{ok:false,…}` 这一表达法同样适用——只看 HTTP 状态码会把用它报出的失败当成功。
+
+### 14.5 `inheritedEventCount` 的口径与不变量
+
+**它不是副本的事件总数，是继承前缀的长度**（= 刀口在源日志里的下标）。副本总数
+= `inheritedEventCount` + 子会话自有事件，而自有事件**至少**含宿主自动追加的一条
+`session/end-seed` 标记（`@deepseek-ai/dsh-session/lib/types/index.js:468-471`；
+同款见 `lib/index.js:1086-1087` 与 `dsh-session-persistence-jsonl/lib/worker.cjs:5389-5390`）：
+
+```js
+if (seed !== undefined && mode === 'snapshot' && this.header.isSeeded) {
+    this.append('session/end-seed', { inherited: true });
+} else if (seed !== undefined && this.log.at(-1)?.type !== 'session/end-seed') {
+    this.append('session/end-seed', {});
+}
+```
+
+所以**拿总数去对账必然对不上，差值 ≥ 1 属设计如此**，不是计数错误。官方对该字段的定义见
+`@deepseek-ai/dsh-session/README.zh.md:66`：`ownEvents()` 从该切点开始，且
+「构造 seed 可以在继承前缀之后包含 child 自有的设置事件」。
+
+**要验的是这条不变量，而不是总数**：
+
+> 最后一条带 `data.inherited === true` 的 `session/end-seed`，其 `seq` 必须等于该会话的
+> `inheritedEventCount`。
+
+它被 codec 强制执行、违反即抛错（`dsh-session-persistence-jsonl/lib/worker.cjs:8795`：
+`lastInheritedMarker !== cut` → `SessionFormatError('format v2 seeded header disagrees with
+its last inherited end-seed marker')`；v1→v2 同款见 `dsh-session-format-v1-to-v2/lib/index.js:102`，
+v3 只要求「存在」，见 `dsh-session-format-v2-to-v3/lib/index.js:10098-10099`）。
+
+**标记分两种，只有带标记的才建立切点**：`dsh-session-format-v2-to-v3/README.zh.md:90`
+——「其源序号等于继承事件数，**不含该标记**；……**未标记继承的结束标记不建立切点**」。
+多处实现都取**最后一条带标记的**（`dsh-session-format-v2-to-v3/lib/index.js:567`、
+`dsh-session-format-v1-to-v2/lib/index.js:252`）。
+
+**推论**：副本比源多出的 `session/end-seed` 若**不带** `inherited` → 无害（不建立切点，
+不变量照旧成立）；若**带** → 末条标记的 `seq` 会落在 `cut + 1`，与头部 `cut` 不符，
+命中上面那条 `SessionFormatError`。注意宿主追加标记的两个分支**守卫不对称**：带标记的分支
+**没有**「日志末尾已是 `end-seed` 就不加」的检查，不带标记的分支**有**——
+这是唯一可能出现重复标记的位置。
+
+> **排查提醒**：总数还会被子会话建好**之后**写入的自有事件推高（`session/title`、
+> `model/selection` 等），只增不减且与 fork 正确性无关。用总数对账永远得不出结论。
 
 ---
 

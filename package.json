@@ -1,6 +1,6 @@
 {
   "name": "astrdsh-relay-workspace",
-  "version": "0.8.4",
+  "version": "0.8.6",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "description": "AstrDsh Relay（星驿）工作区根：只放闸门入口，不再是可分发的包。DSH 侧包在 dsh-astrbot-relay/，AstrBot 侧插件在 astrbot_plugin_dsh_relay/。",
@@ -12,9 +12,11 @@
     "check:version": "node scripts/package-release.mjs --check",
     "test:location": "node scripts/test-location.mjs",
     "test:session-title": "node scripts/test-session-title.mjs",
+    "test:questions": "node scripts/test-questions.mjs",
+    "test:question-chain": "node scripts/test-question-chain.mjs",
     "test:location-text": "python scripts/test-location-text.py",
     "test:allowlist": "python scripts/test-allowlist.py",
-    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:allowlist && npm run test:session-title && npm run check:version",
+    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:allowlist && npm run test:session-title && npm run test:questions && npm run test:question-chain && npm run check:version",
     "dist": "node scripts/package-release.mjs"
   }
 }
