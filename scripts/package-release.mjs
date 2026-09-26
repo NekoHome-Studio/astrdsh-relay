@@ -331,19 +331,28 @@ function notes(version, tag, sums, artifacts) {
 > 补上 v3 留下的缺口：fork 出来的子会话此前只能被 \`/message\` 顺势接管）、
 > \`POST /message\`（agent 会话驱动：create / resume / followup）、
 > \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
-> （审批 waterfall，4 位一次性 code）；含幂等（有界 LRU + TTL）、事件转发、
+> （审批 waterfall，4 位一次性 code）、\`POST /answer\`（用户问答回执：与审批**严格分离**的第二条通道，
+> \`callId\` 前缀 \`im-q-\` 与审批的 \`im-\` 互不干扰）；含幂等（有界 LRU + TTL）、事件转发、
 > 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
 > Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十方法（health / where / workspaces /
 > rebind / fork / adopt / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
 > \`/dsh approve|reject\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
 > \`/dsh fork [轮次序号]\`、\`/dsh adopt\`、流式节流回帖与 \`push_to_session\`。
 >
+> **v0.8.6 新增**：用户问答通道（\`ask_user_question\`；下行事件 \`question/required\` /
+> \`question/resolved\`，含 \`/dsh answer\` 指令与 \`questionsEnabled\` / \`questionTimeoutMs\`）；
+> **在途投递单**——\`queue\` 的每一份额度对应一张单子，由 \`turn/end\` 结算、等待态超时
+> fail-closed 兜底（\`waitTimeoutMs\`）；\`/health\` 新增 \`pending[]\`，把「在等一个可能不到来的
+> 答案」与「闸门已放、但不保证 turn 真的闭合」分开列出。另修掉一处「\`signal\` 预中止导致
+> 问答 Promise 永久悬挂」的缺陷——那比它要修的队列死锁更隐蔽。
+>
 > **配置项**：\`hmacMode\`（契约 §5.2 请求体 HMAC 签名）、\`policy\` 的 \`on-demand\` /
 > \`daily\` 轮转、\`idleTtlMs\` 空闲回收均已实现；轮转与回收走
 > \`workspaceRegistry.archiveSession\`，**只归档不删历史**。DSH 侧
-> \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。
+> \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。另有本版新增的 \`questionsEnabled\` / \`questionTimeoutMs\`
+> （问答通道）与 \`waitTimeoutMs\`（在途投递单的等待态超时兜底；设 \`0\` 关闭）。
 >
-> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
+> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 
 ## 产物
