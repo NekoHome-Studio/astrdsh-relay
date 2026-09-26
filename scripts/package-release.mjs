@@ -425,6 +425,19 @@ ${preRelease}> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置
 > 管理面尚未接管、目标是最终替代 connector」（原文读起来是长期并存，与设计决策相左）。
 > **本版 \`BRIDGE_VERSION\` 仍是 \`6\`**：与 v0.8.7+ 的任一侧可以配对。
 >
+> 🎉 **v0.9.0 稳定版**：\`0.9.0-alpha\` 的定版，内容 = alpha + 两个**验证脚本**
+> （\`scripts/verify-bridge-live.py\`、\`scripts/test-location-live.mjs\`；都需要活的桥，
+> 因此**不进 \`npm test\`**）。**本版与 alpha 最大的区别是「有过真机」**：
+> 完成了首次真实部署并跑通——两个群、各自独立的 DSH 会话与标题、完整一轮对话
+> （会话存档 18 条事件，含 \`turn/start\` → \`assistant/message\` → \`turn/end\`）。
+> 过程中暴露的坑（DSH 侧从未安装、AstrBot 改配置后**不重读**要重载而非保存、
+> \`--dump-config\` 会把 token 打到终端、profile 的 \`file:\` 依赖别指向构建产物、
+> 会话存档是**多帧 zstd**）连同修法都写进了 \`docs/DEPLOY-CHECKLIST.md\` §12。
+>
+> ⚠️ **仍未实测**：契约 §18.8 的 B 半地基（插件来源的 \`followup\` 是否真能起一轮）、
+> A 半在长 turn 下的误报率。部署清单 §11 的记录表**如实标着「未测」**——
+> 接口通了不等于能力验过了。
+>
 > **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 

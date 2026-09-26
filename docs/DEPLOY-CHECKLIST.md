@@ -156,8 +156,18 @@ Expand-Archive .\astrbot_plugin_dsh_relay-0.8.9.zip -DestinationPath <AstrBot �
 | 日志 | 意思 |
 |---|---|
 | `契约版本不匹配：本端 6，…` | 两侧版本号不一致，**必须同时升** |
-| `桥接鉴权失败` | `bridge_token` 与 DSH 侧 `token` 不一致 |
-| `桥接端没有这个端点` | `bridge_url` 的**路径段**写错了（漏了/多了 `/astrbot-relay`） |
+| `桥接鉴权失败` / `unauthorized` | `bridge_token` 与 DSH 侧 `token` 不一致，**或 AstrBot 还没重读到新配置**（见 §12.2） |
+| `桥接端没有这个端点` / 404 | `bridge_url` 的**路径段**写错了（漏了/多了 `/astrbot-relay`），或 DSH 侧插件根本没挂上 |
+
+**一条命令替你把 §2~§4 的机器可判定部分全对完：**
+
+```powershell
+python scripts/verify-bridge-live.py          # 或 npm run verify:bridge
+```
+
+它从 profile 的 patch 里读 `token` / `pathPrefix` / `cwd`（换机器不用改脚本），
+检查：路由挂没挂、`bridgeVersion` 是不是 6、几条路由是否都 200、
+鉴权是否 fail-closed、`state.json` 是否已生成。**token 只打 sha256 前 12 位**，不泄露明文。
 
 ---
 
@@ -174,6 +184,23 @@ Expand-Archive .\astrbot_plugin_dsh_relay-0.8.9.zip -DestinationPath <AstrBot �
 
 - [ ] DSH Web UI 的会话列表里能看到标题形如 `星驿 · <platform>/<messageType>/<sessionId>`
       （这是「反向定位」的验收点：**标题真的写进了 DSH 会话**，不只是响应字段）
+
+### 4.1 定位不同会话集（一键实测）
+
+```powershell
+node scripts/test-location-live.mjs           # 或 npm run test:location-live
+```
+
+它读会话存档验四条链路，**不看接口自说自话**：
+
+1. 正向定位（§12.1）：`/where` 逐个对话答出的 `sessionId` / `title` / `cwd` / `source`；
+2. 映射集合（§12.2）：`/conversations` 的 `count` 与 `returned`；
+3. **反向定位（§12.4）**：解开会话存档，找 `session/title` **事件**并比对它等于接口报的标题
+   —— 那才是 DSH Web 会话列表的数据源（投影缓存里另有一份）；
+4. 不同会话集：不同 IM 对话是否落在**不同** `sessionId` 与**不同**标题。
+
+> ⚠️ **第 4 条至少要两个 IM 对话才有意义**：只有一个对话时它是恒真的，
+> 脚本会自己把这句话打出来。换一个群或私聊各发一条 `dsh 你好` 再跑。
 
 `dsh where` 里三个 id 各自是什么，排查时最常混：
 
@@ -388,23 +415,81 @@ proactivePrompt: '只输出 {silent}'
 
 ---
 
-## 11. 记录表（跑完请填回来）
+## 11. 记录表
 
-三处「未实测」的关闭凭据就是这张表。**没跑的就写没跑**，别留空。
+三处「未实测」的关闭凭据就是这张表。**没跑的就写没跑**，别留空，也别把「接口通了」
+当成「能力验过了」。
 
 | # | 待关闭项 | 怎么算通过 | 结果 |
 |---|---|---|---|
-| 1 | 契约 **§18.8**：插件来源的 `followup` 是否起一轮（B 半地基） | §6.2 里出现「已入发件箱」或「选择沉默」 | ☐ 成立 / ☐ 不成立 / ☐ 未测 |
-| 2 | **PLAN-v0.8.5 §5.3**：部署侧同步与定版 | §2~§4 全绿 | ☐ 通过 / ☐ 未测 |
-| 3 | **A 半误报率**：长 turn（含长工具调用）期间会不会误判掉线 | §5.1 的前提下跑一次 > 2 分钟的工具调用，**不应**出现掉线播报 | ☐ 无误报 / ☐ 有误报 / ☐ 未测 |
-| 4 | 主动消息的**量级**：5 秒轮询对两侧的负载 | §6.3 通过，且两侧 CPU/日志量无明显变化 | ☐ 可忽略 / ☐ 有影响 / ☐ 未测 |
-| 5 | 代理缓冲下的流式 | §10 第一条 | ☐ 正常 / ☐ 失效 / ☐ 未测 |
+| 1 | 契约 **§18.8**：插件来源的 `followup` 是否起一轮（B 半地基） | §6.2 里出现「已入发件箱」或「选择沉默」 | ☐ 成立 / ☐ 不成立 / **☐ 未测**（`proactiveHeartbeatMs` 仍为 0，还没跑） |
+| 2 | **PLAN-v0.8.5 §5.3**：部署侧同步与定版 | §2~§4 全绿 | ✅ **通过**（2026-09-26 真机，见 §12） |
+| 3 | **A 半误报率**：长 turn（含长工具调用）期间会不会误判掉线 | §5.1 的前提下跑一次 > 2 分钟的工具调用，**不应**出现掉线播报 | ☐ 无误报 / ☐ 有误报 / **☐ 未测** |
+| 4 | 主动消息的**量级**：5 秒轮询对两侧的负载 | §6.3 通过，且两侧 CPU/日志量无明显变化 | ☐ 可忽略 / ☐ 有影响 / **☐ 未测** |
+| 5 | 代理缓冲下的流式 | §10 第一条 | ☐ 正常 / ☐ 失效 / **☐ 未测**（本机回环，没有代理） |
 
-**版本与日期**：IM 侧 `______`、DSH 侧 `______`、`bridgeVersion=______`、日期 `______`。
+**首次真机记录（2026-09-26）**
+
+| 项 | 值 |
+|---|---|
+| AstrBot 侧 | `astrbot_plugin_dsh_relay` **0.9.0-alpha** |
+| DSH 侧 | `dsh-astrbot-relay` **0.9.0-alpha** |
+| `bridgeVersion` | **6**（两侧一致） |
+| 部署形态 | 同机回环（`http://127.0.0.1:3080/astrbot-relay`），profile `web` |
+| 已验证的对话数 | **2** 个群，各自独立会话、独立标题 |
+| `verify-bridge-live.py` | 15 项全绿 |
+| `test-location-live.mjs` | 35 项全绿（含两条会话各 18 条事件、`session/title` 比对） |
 
 ---
 
-## 12. 回滚
+## 12. 首次真机部署踩到的坑（都值得记住）
+
+### 14.1 404：DSH 侧**根本没装**插件
+
+现象：AstrBot 每 5 秒一条 `[dsh_relay] 主动消息轮询失败：HTTP 404`，
+而 `GET /` 回 401（DSH 本身活着）。
+
+排查结论：`~/.dsh/profiles/web` 的 `dependencies`、`dsh.profile.bundles`、
+`cordis.patch.yml`、`node_modules` **四处都没有它** —— 插件从未安装。
+修法就是 §2.1 那一步；顺带记住 **`dsh plugin add` 会自动 reconcile
+`dsh.profile.bundles`**，不用手改 `package.json`。
+
+### 14.2 401：改了 AstrBot 的配置文件，但**它没重读**
+
+现象：404 消失、变成 `unauthorized`，而磁盘上两侧 token **完全一致**。
+
+根因：AstrBot 把插件配置**读在内存里**，直接改 `data/config/<插件>_config.json`
+它不会察觉。**修法是「重载插件」，不是「保存配置」**：
+
+* 重载会走 `star_manager.load()`，其中**重新构造** `AstrBotConfig(config_path=…)`
+  （`astrbot/core/star/star_manager.py:1159`）→ 重新读盘 ✓；
+* **点「保存配置」反而危险**：WebUI 会把**它内存里那份旧值**写回去，
+  把你在文件里改的 token 冲掉。
+
+### 14.3 `dsh --profile web --dump-config` **会把 token 明文打到终端**
+
+它就是打印解析后的完整配置。要用它核验可以，但**别把输出贴到任何地方**。
+（顺带记一个与直觉相反的事实：这个命令会重写 `cordis.yml`，但 `cordis.yml`
+仍是空列表 `[]`，**不落盘 token** —— 泄漏点是终端，不是文件。）
+
+### 14.4 profile 的 `file:` 依赖**别指向构建产物**
+
+`dsh plugin add <tgz>` 会把**绝对路径**记进 `package.json`。若那个路径在
+`dist/` 之类的构建输出目录里，下次发版 `rmSync(dist)` 一跑，这个依赖就悬空，
+profile 一旦 `pnpm install`（连其它插件一起）就会失败。
+把 tgz 复制进 profile 自己目录（如 `profiles/web/vendor/`）再改指相对路径即可。
+
+### 14.5 读 DSH 会话存档：它是**多帧 zstd**
+
+`session.v3.jsonl.zstd` 是 append-only 的多帧拼接。`zstdDecompressSync`
+**只解第一帧**（16 KB 的文件只解出 213 字节），会让人误以为「存档里只有会话头、
+没有消息」。必须按 zstd 魔数 `28 B5 2F FD` 切帧、逐帧解压 —— 切完才是
+完整的 18 条事件（含 `session/title` 与整轮对话）。
+`scripts/test-location-live.mjs` 里就是这么做的。
+
+---
+
+## 13. 回滚
 
 1. `proactiveHeartbeatMs` 改回 `0`（**这是最该先做的一步**：它默认就是关的，
    开着才是异常状态）
@@ -422,7 +507,7 @@ proactivePrompt: '只输出 {silent}'
 
 ---
 
-## 13. 这份清单**不能**证明什么
+## 14. 这份清单**不能**证明什么
 
 写清楚，免得被打勾的表误导：
 
