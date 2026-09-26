@@ -172,12 +172,24 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 {
   "ok": true,
   "bridgeVersion": "6",
-  "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
   "conversations": 3,
-  "heartbeatMs": 15000
+  "pending": [{ "conversation": "…", "attaching": false, "queue": 0, "approvals": 0, "questions": 0, "stuckAt": 0 }],
+  "pathPrefix": "/astrbot-relay",
+  "cwd": "C:\\work",
+  "statePath": "C:\\Users\\me\\.dsh\\astrbot-relay\\state.json",
+  "stateExisted": true,
+  "policy": "one-to-one",
+  "heartbeatMs": 15000,
+  "sessionTitleTemplate": "星驿 · {platform}/{messageType}/{sessionId}"
 }
 ```
+
+> ⚠️ **`dshVersion` 目前不存在**。本契约早期版本的示例里写过它，但实现**从未提供**
+> （`handleHealth` 里只有一行注释：需要从 host 服务读，未核实，故未实现）。
+> 按契约「字段缺失由 IM 侧忽略」的前向兼容规则，这不影响任何客户端；
+> 但示例不该展示一个不存在的字段——**示例就是别人抄的东西**。
+> 真要它，得先核实宿主上取版本的服务名。
 
 IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不匹配时
 **拒绝启用桥接并明确报错**，不做猜测性降级。

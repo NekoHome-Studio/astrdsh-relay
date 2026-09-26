@@ -14,7 +14,7 @@
 > 契约预留的三项配置也已接线（`hmacMode` / `policy` 的 `on-demand`·`daily` 轮转 /
 > `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。
 > v0.8.7 起另有**心跳**：IM 侧的连通性播报（A，固定文案或由对话模型组织措辞）与
-> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.8.9`。
+> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.9.0-alpha`。
 
 ## 交付物地图
 
@@ -31,6 +31,7 @@
 | `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js` / `lib/proactive.js`，十二个端点全部落地）。 |
 | `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十二个方法全部实现）。 |
 | `docs/RELEASING.md` | 发版流程：统一版本规则、tag 约定、产物形态与原因、CI 检查项。 |
+| `docs/DEPLOY-CHECKLIST.md` | **部署与验证清单**：装包 → 逐条验证（数据面 / 心跳 A / 自主心跳 B / 审批 / 问答 / 呈现 / 跨机反代）→ 记录表 → 回滚。三处「未实测」的关闭凭据就是它的 §11。 |
 | `scripts/package-release.mjs` | 打包脚本：校验 tag 与两侧版本 → 产出 tgz + zip + SHA256SUMS + 发布说明。 |
 | `scripts/check-contract-parity.mjs` | 两侧契约常量一致性闸门（事件类型 / 错误码 / 路由 / 版本）。 |
 | `.github/workflows/` | CI（语法 + 契约一致性 + 版本闸门 + 打包冒烟）与 Release（tag 触发自动发版）。 |

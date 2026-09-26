@@ -318,9 +318,14 @@ function notes(version, tag, sums, artifacts) {
     fail(`产物命名异常，无法生成发布说明：tgz=${tgz}，zip=${zip}`)
   }
   const ref = tag || `v${version}`
+  // 预发布提示由**版本号自己**决定，不靠人手记：带 `-` 就是预发布
+  // （与 release.yml 的 `prerelease: contains(tag, '-')` 同一判据）。
+  const preRelease = version.includes('-')
+    ? `> 🅰️ **预发布（\`${version}\`）**：供真机部署验证使用，接口与行为在定版前仍可能变。\n>\n`
+    : ''
   const body = `# AstrDsh Relay（星驿）${ref}
 
-> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置（\`hmacMode\` / \`policy\` 轮转 / \`idleTtlMs\`）自本版起均已接线。**
+${preRelease}> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置（\`hmacMode\` / \`policy\` 轮转 / \`idleTtlMs\`）自本版起均已接线。**
 >
 > **已实现**（${Object.keys(ROUTES).length} 个端点全部有真实 handler）：DSH 侧 \`GET /health\`、\`GET /where\`、
 > \`GET /conversations\`、\`GET /workspaces\`（工作区清单，\`workspaceRegistry.list()\`）、
@@ -411,6 +416,14 @@ function notes(version, tag, sums, artifacts) {
 > 图片链的构造与 \`event.image_result\` 逐字对应（http → \`Image.fromURL\`、
 > 否则 \`Image.fromFileSystem\`，见 \`message_event_result.py:93-116\`）。
 > **本版 \`BRIDGE_VERSION\` 仍是 \`6\`**，只动 IM 侧，两侧可以不同时升级。
+>
+> **v0.9.0-alpha 文档**：新增 **\`docs/DEPLOY-CHECKLIST.md\`**（部署与验证清单：装包 → 数据面 →
+> 心跳 A → 自主心跳 B → 审批 → 问答 → 呈现 → 跨机反代 → 记录表 → 回滚），
+> 其中三处「至今未实测」的项给了可判定的操作与判据，§11 的记录表就是关闭它们的凭据。
+> 同时更正两处与事实不符的表述：契约 §3.4 的 \`/health\` 示例**删掉从未实现的
+> \`dshVersion\`**；AstrBot 侧 \`metadata.yaml\` 的定位描述改为「当前只做数据面、
+> 管理面尚未接管、目标是最终替代 connector」（原文读起来是长期并存，与设计决策相左）。
+> **本版 \`BRIDGE_VERSION\` 仍是 \`6\`**：与 v0.8.7+ 的任一侧可以配对。
 >
 > **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
