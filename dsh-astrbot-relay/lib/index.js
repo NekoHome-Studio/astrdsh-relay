@@ -45,6 +45,10 @@ import {
 } from './contract.js'
 import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
 import { normalizeAnswers, questionError, renderQuestion } from './questions.js'
+import {
+  PROACTIVE_SKIP, enqueueBounded, evaluateProactiveGates, isSilentReply,
+  localMinutesOfDay, renderProactivePrompt,
+} from './proactive.js'
 import { applySessionTitle, TITLE_MAX_BYTES, TITLE_RESULT, titleByteLength } from './session-title.js'
 import { loadState, resolveStatePath, saveState } from './state.js'
 
@@ -122,6 +126,30 @@ export const Config = Schema.object({
 
   // ---- 输出 ----
   forwardReasoning: Schema.boolean().default(false),
+
+  // ---- 自主心跳（B，见 docs/PLAN-heartbeat.md）----
+  /** 扫描周期（毫秒）。**0 = 关闭**（默认）。这是「可自由设置时长」的落点。 */
+  proactiveHeartbeatMs: Schema.number().default(0),
+  /** 静默多久才允许发起一次（毫秒） */
+  proactiveMinIdleMs: Schema.number().default(1_800_000),
+  /** 允许时段 `["09:00","23:00"]`；空数组 = 不限（支持跨零点） */
+  proactiveWindow: Schema.array(Schema.string()).default([]),
+  /** 每对话每日配额；0 = 不限 */
+  proactiveMaxPerDay: Schema.number().default(4),
+  /** 心跳提示词；`{conversation}` 与 `{silent}` 会被替换 */
+  proactivePrompt: Schema.string().default(
+    '（这是一次定时心跳，不是用户消息）对话 {conversation} 已静默一段时间。'
+    + '若此刻没有值得主动告知群里的事，只输出 {silent}；若确有必要说话，就直接说，'
+    + '你的输出会原样发到群里。',
+  ),
+  /** 沉默哨兵：回复**整条等于**它就不发出去 */
+  proactiveSilentSentinel: Schema.string().default('[SILENT]'),
+  /** 单对话发件箱上限（超出丢最旧的） */
+  proactiveOutboxSize: Schema.number().default(20),
+  /** `GET /proactive` 单次最多返回条数 */
+  proactivePollMax: Schema.number().default(50),
+  /** IM 侧多久没轮询就算「没人在听」（毫秒） */
+  proactiveImAliveMs: Schema.number().default(180_000),
 })
 
 /**
@@ -198,6 +226,13 @@ export function apply(ctx, config) {
           // v0.8.5：等答案的用户问答题（callId → {expiresAt, settle}）。与 approvals 分开存，
           // 因为两条通道的答案形状、结算语义、错误码都不同，混在一张表里迟早串味。
           questions: new Map(),
+          // v6：自主心跳的每对话状态。outbox 是「决定说话」之后的待发件；
+          // proactiveTurn 非空表示**当前这一轮是心跳发起的**，其输出不进下行通道。
+          outbox: [],
+          proactiveTurn: null,
+          proactiveLastAt: 0,
+          proactiveUsedDay: '',
+          proactiveUsedCount: 0,
           turn: 0,
           // 新版助手流的 start 帧带着 {attemptId, turn, step}，而 chunk 帧**不带**
           // （dsh-agent/lib/types/runtime-types.d.ts 的 AssistantStreamFrame），
@@ -394,6 +429,9 @@ export function apply(ctx, config) {
      */
     function push(conversation, frame, options) {
       const bridge = bridgeOf(conversation)
+      // 自主心跳那一轮的**输出**不进下行通道：它要么变成发件箱里的一条主动消息，
+      // 要么被哨兵吞掉。审批/问答是**可操作**的，用 visibleDuringProactive 放行。
+      if (bridge.proactiveTurn && options?.visibleDuringProactive !== true) return null
       if (options?.ephemeral === true) {
         const ephemeral = { ts: Date.now(), ...frame }
         broadcast(bridge, ephemeral)
@@ -479,6 +517,7 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.EVENTS), handler: handleEvents },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.APPROVAL), handler: handleApproval },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.ANSWER), handler: handleAnswer },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.PROACTIVE), handler: handleProactive },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WHERE), handler: handleWhere },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.CONVERSATIONS), handler: handleConversations },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WORKSPACES), handler: handleWorkspaces },
@@ -721,6 +760,12 @@ export function apply(ctx, config) {
             .filter((block) => block.type === 'text')
             .map((block) => block.text)
             .join('')
+          // 这一轮是心跳发起的：最终文本收在此处，由 turn/end 决定「沉默」还是入发件箱。
+          // 多 step 取**最后一条**已定稿的 assistant/message（与既有口径一致）。
+          if (bridge.proactiveTurn) {
+            bridge.proactiveTurn.text = text
+            return
+          }
           push(bridge.conversation, {
             type: EVENT.MESSAGE_FINAL, turn: data.turn, step: data.step,
             text, interrupted: data.message?.interrupted === true,
@@ -737,6 +782,8 @@ export function apply(ctx, config) {
           // v0.8.5：turn 闭合就是**权威**的闸门释放点（先 push 再放闸，IM 一定先看到
           // turn/end 再看到闸门放开；反序会让 IM 在收到收尾帧前抢发下一封）。
           settleInflight(bridge, 'turn-end')
+          // 心跳轮到站：沉默就到此为止，否则把文本放进发件箱等 IM 侧来取。
+          if (bridge.proactiveTurn) finishProactiveTurn(bridge)
           return
         }
         default:
@@ -950,7 +997,7 @@ export function apply(ctx, config) {
           if (timer) clearTimeout(timer)
           push(bridge.conversation, {
             type: EVENT.APPROVAL_RESOLVED, callId, outcome, via,
-          })
+          }, { visibleDuringProactive: true })
           resolve(outcome)
         }
         timer = setTimeout(() => finish(APPROVAL_OUTCOME.REJECTED, 'timeout'), expiresAt - Date.now())
@@ -960,7 +1007,7 @@ export function apply(ctx, config) {
           type: EVENT.APPROVAL_REQUIRED, callId,
           toolName: request.toolName ?? '', reason: request.reason ?? '',
           code, expiresAt,
-        })
+        }, { visibleDuringProactive: true })
         // turn 被取消 → 必须把它结算掉，否则这个审批会挂到进程结束。
         request.signal?.addEventListener?.('abort', () => finish('cancelled', 'abort'), { once: true })
       })
@@ -1030,7 +1077,7 @@ export function apply(ctx, config) {
           if (announced) {
             push(bridge.conversation, {
               type: EVENT.QUESTION_RESOLVED, callId, via, answered: Array.isArray(answers),
-            })
+            }, { visibleDuringProactive: true })
           }
           if (Array.isArray(answers)) resolve({ answers })
           else reject(questionError('ASK_ABORTED', via))
@@ -1053,7 +1100,7 @@ export function apply(ctx, config) {
         push(bridge.conversation, {
           type: EVENT.QUESTION_REQUIRED, callId, expiresAt,
           questions: questions.map(renderQuestion),
-        })
+        }, { visibleDuringProactive: true })
         // turn 被取消 → 必须结算，否则这个问答会挂到进程结束。
         request?.signal?.addEventListener?.('abort', () => finish(null, 'abort'), { once: true })
       })
@@ -1066,6 +1113,147 @@ export function apply(ctx, config) {
       if (!bridge || !config.questionsEnabled) return next()
       return askQuestions(bridge, request)
     })
+
+    // ────────────────────────────────────────────────────────────────
+    // 自主心跳（B）：调度、哨兵抑制、发件箱
+    // 设计见 docs/PLAN-heartbeat.md。两点取舍写在这里：
+    //   ① 不用常连 SSE 送主动消息——老 SSE 的 seq 是**每对话独立**的，
+    //      复用一条流的 Last-Event-ID 无法表达 N 个对话的进度，要么引入全局序号与
+    //      全局环形缓冲，要么放弃重放；而主动消息丢了就是丢了。改用有界发件箱 +
+    //      轮询：天然可重放、无常连要保活、且不违反契约 §0 的单向连接原则。
+    //   ② 哨兵抑制放在**本侧**（message/final 出门之前），而不是让 IM 侧判：
+    //      一旦哪处判断漏了，`[SILENT]` 就会露在群里。
+    // ────────────────────────────────────────────────────────────────
+
+    /** 发件箱的全局自增游标：IM 侧拿它当 ack，一次能跨对话取走。 */
+    let proactiveCursor = 0
+    /**
+     * IM 侧最近一次轮询的时刻。它同时充当「有人在线听」的证据——
+     * gates 里的 `online` 就取它，而不是去同步 IM 侧的每对话在线态：
+     * IM 侧还在轮询就说明它活着，而它没在轮询时发心跳只会白烧一次 LLM 调用。
+     */
+    let lastProactivePollAt = 0
+
+    /** 心跳轮到站：沉默就丢掉，否则入发件箱。 */
+    function finishProactiveTurn(bridge) {
+      const turn = bridge.proactiveTurn
+      bridge.proactiveTurn = null
+      if (!turn) return
+      const text = String(turn.text ?? '').trim()
+      if (isSilentReply(text, config.proactiveSilentSentinel)) {
+        log?.info?.(`${tag} 自主心跳：这一轮选择沉默（${bridge.conversation}）`)
+        return
+      }
+      proactiveCursor += 1
+      const { dropped } = enqueueBounded(
+        bridge.outbox,
+        { id: proactiveCursor, conversation: bridge.conversation, text, at: Date.now() },
+        config.proactiveOutboxSize,
+      )
+      if (dropped) {
+        log?.warn?.(`${tag} 自主心跳：发件箱已满，丢弃 ${dropped} 条最旧的（${bridge.conversation}）`)
+      }
+      log?.info?.(`${tag} 自主心跳：已入发件箱 #${proactiveCursor}（${bridge.conversation}）`)
+    }
+
+    /**
+     * 发起一轮心跳。
+     *
+     * **先记配额**：这一轮无论最终说不说，LLM 的钱都已经花了。
+     * 再写 `proactiveLastAt` 防跑飞——下一次至少要再静默 `proactiveMinIdleMs`。
+     * 用独立字段而不动 records 的 `lastActiveAt`：后者是空闲回收与轮转的判据，
+     * 被心跳搅动会让「久未活动」永远判不出来。
+     */
+    function fireProactive(bridge) {
+      const dayKey = localDateKey(Date.now())
+      if (bridge.proactiveUsedDay !== dayKey) {
+        bridge.proactiveUsedDay = dayKey
+        bridge.proactiveUsedCount = 0
+      }
+      bridge.proactiveUsedCount += 1
+      bridge.proactiveLastAt = Date.now()
+      const prompt = renderProactivePrompt(config.proactivePrompt, {
+        conversation: bridge.conversation,
+        silentSentinel: config.proactiveSilentSentinel,
+      })
+      bridge.proactiveTurn = { text: '', at: Date.now() }
+      try {
+        bridge.agent.followup(createUserMessage({
+          content: [{ type: 'text', text: prompt }],
+          // 必须标**插件来源**：这不是用户说的话，否则模型会以为用户刚开口。
+          // form/summary 的取值见 dsh-llm 的 MessageSourceMap / ContextFormed。
+          source: { kind: 'plugin', plugin: name, form: 'notice', summary: '定时心跳' },
+        }))
+        log?.info?.(`${tag} 自主心跳：已向 ${bridge.conversation} 发起一轮`)
+      } catch (error) {
+        bridge.proactiveTurn = null
+        log?.warn?.(`${tag} 自主心跳发起失败（${bridge.conversation}）：${String(error)}`)
+      }
+    }
+
+    /** 扫描一遍所有对话，逐条过闸门；不通过的原因不逐条打日志（每分钟刷屏没意义）。 */
+    function proactiveTick() {
+      const now = Date.now()
+      const minutesOfDay = localMinutesOfDay(now)
+      const dayKey = localDateKey(now)
+      const online = lastProactivePollAt > 0
+        && (now - lastProactivePollAt) <= config.proactiveImAliveMs
+      for (const bridge of bridges.values()) {
+        const record = records.get(bridge.conversation)
+        const gate = evaluateProactiveGates({
+          enabled: Math.trunc(config.proactiveHeartbeatMs) > 0,
+          hasSession: Boolean(record?.dshSessionId) && Boolean(bridge.agent),
+          online,
+          attaching: bridge.attaching,
+          queue: bridge.queue,
+          stuckAt: bridge.stuckAt,
+          approvals: bridge.approvals.size,
+          questions: bridge.questions.size,
+          nowMs: now,
+          lastActiveAt: Math.max(Number(bridge.proactiveLastAt) || 0, Number(record?.lastActiveAt) || 0),
+          minIdleMs: config.proactiveMinIdleMs,
+          window: config.proactiveWindow,
+          minutesOfDay,
+          usedToday: bridge.proactiveUsedDay === dayKey ? bridge.proactiveUsedCount : 0,
+          maxPerDay: config.proactiveMaxPerDay,
+        })
+        if (!gate.fire) continue
+        fireProactive(bridge)
+      }
+    }
+
+    /** GET /proactive?since=<游标> — 取走主动消息（契约 §18）。 */
+    function handleProactive(request, response) {
+      if (!authorize(request, response, config)) return
+      lastProactivePollAt = Date.now()
+      const raw = Number(queryOf(request).searchParams.get('since') ?? 0)
+      const since = Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 0
+      const items = []
+      for (const bridge of bridges.values()) {
+        // 客户端给的 since 就是它的 ack：比它旧的一律清掉，发件箱不会无限堆积。
+        if (since > 0) bridge.outbox = bridge.outbox.filter((item) => item.id > since)
+        for (const item of bridge.outbox) if (item.id > since) items.push(item)
+      }
+      items.sort((a, b) => a.id - b.id)
+      const max = Math.max(1, Math.trunc(config.proactivePollMax))
+      const head = items.slice(0, max)
+      writeJson(response, 200, {
+        ok: true,
+        cursor: head.length ? head[head.length - 1].id : since,
+        items: head,
+      })
+    }
+
+    // 扫描循环：0（默认）时连定时器都不建。
+    const proactiveIntervalMs = Math.max(0, Math.trunc(config.proactiveHeartbeatMs))
+    if (proactiveIntervalMs > 0) {
+      ctx.effect(() => {
+        const timer = setInterval(proactiveTick, Math.max(1000, proactiveIntervalMs))
+        timer.unref?.()
+        return () => clearInterval(timer)
+      }, `${name}: proactive`)
+      log?.info?.(`${tag} 自主心跳已启用：每 ${proactiveIntervalMs}ms 扫描一次`)
+    }
 
     // ────────────────────────────────────────────────────────────────
     // 路由实现
@@ -1116,6 +1304,8 @@ export function apply(ctx, config) {
         statePath,
         stateExisted,
         policy: config.policy,
+        // IM 侧算「帧间隔阈值」要用它（阈值 = 本值 × 系数），两侧必须同口径。
+        heartbeatMs: Math.max(1000, Math.trunc(config.heartbeatMs)),
         sessionTitleTemplate: config.sessionTitleTemplate,
         // dshVersion 需要从 host.describe 之类的服务读取——【未核实】，
         // 实现阶段补上；契约允许字段缺失时由 IM 侧忽略。

@@ -27,8 +27,18 @@ import { randomUUID } from 'node:crypto'
  *     「另做一次改指」当时并无对应路由（rebind 的入参是工作区，语义是新建）。
  *     同样**没有**新增错误码：会话不存在→`not_found`（404），工作区不含该会话
  *     与「有投递在途」→`agent_busy`（409）。
+ *
+ * v5：`attaching` 的释放条件从「由 `whenIdle` 释放」改成「由 `turn/end` 结算」，
+ *     `whenIdle` 退居兜底。**没有**新增路由或错误码：这是第一次「同一份字段、
+ *     不同的时序」，因此必须递增（否则 IM 侧无从察觉时序变化）。
+ *
+ * v6：新增 `GET /proactive`（契约 §18）与 `/health` 的 `heartbeatMs` 字段（§3.4）。
+ *     按「老客户端会不会坏」的口径两者都是纯增量，但**不升版就会静默半死**：
+ *     v5 的 IM 不会去调 `/proactive`，DSH 侧的 `online` 闸门于是永远不开，
+ *     自主心跳（B）永远不会触发，且没有任何报错。递增版本号是为了把这种半死状态
+ *     换成启动期的一条明确报错。**没有**新增错误码。
  */
-export const BRIDGE_VERSION = '5'
+export const BRIDGE_VERSION = '6'
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({
@@ -43,6 +53,7 @@ export const ROUTES = Object.freeze({
   FORK: '/session/fork',            // POST  从某对话的完整轮次边界分支出新对话（契约 §14）
   ADOPT: '/session/adopt',          // POST  把某 IM 对话改指到一个**已存在**的会话（契约 §15）
   ANSWER: '/answer',                // POST  回执用户问答（v0.8.5 增量：问答双通道的对侧）
+  PROACTIVE: '/proactive',          // GET   拉取主动消息（v6 增量：自主心跳的发件箱）
 })
 
 /** 下行事件类型。契约 §4。 */

@@ -318,7 +318,7 @@ function notes(version, tag, sums, artifacts) {
     fail(`产物命名异常，无法生成发布说明：tgz=${tgz}，zip=${zip}`)
   }
   const ref = tag || `v${version}`
-  return `# AstrDsh Relay（星驿）${ref}
+  const body = `# AstrDsh Relay（星驿）${ref}
 
 > ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置（\`hmacMode\` / \`policy\` 轮转 / \`idleTtlMs\`）自本版起均已接线。**
 >
@@ -332,11 +332,13 @@ function notes(version, tag, sums, artifacts) {
 > \`POST /message\`（agent 会话驱动：create / resume / followup）、
 > \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
 > （审批 waterfall，4 位一次性 code）、\`POST /answer\`（用户问答回执：与审批**严格分离**的第二条通道，
-> \`callId\` 前缀 \`im-q-\` 与审批的 \`im-\` 互不干扰）；含幂等（有界 LRU + TTL）、事件转发、
+> \`callId\` 前缀 \`im-q-\` 与审批的 \`im-\` 互不干扰）、\`GET /proactive\`（主动消息取件，
+> 有界发件箱 + \`since\` 游标 ack）；含幂等（有界 LRU + TTL）、事件转发、
 > 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
-> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十方法（health / where / workspaces /
-> rebind / fork / adopt / send_message / events / send_approval / aclose）全部实现，含 \`/dsh where\`、
-> \`/dsh approve|reject\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
+> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十二方法（health / where / workspaces /
+> rebind / fork / adopt / send_message / events / send_approval / send_answer / proactive /
+> aclose）全部实现，含 \`/dsh where\`、
+> \`/dsh approve|reject\`、\`/dsh answer <验证码>\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
 > \`/dsh fork [轮次序号]\`、\`/dsh adopt\`、流式节流回帖与 \`push_to_session\`。
 >
 > **v0.8.6 新增**：用户问答通道（\`ask_user_question\`；下行事件 \`question/required\` /
@@ -346,13 +348,44 @@ function notes(version, tag, sums, artifacts) {
 > 答案」与「闸门已放、但不保证 turn 真的闭合」分开列出。另修掉一处「\`signal\` 预中止导致
 > 问答 Promise 永久悬挂」的缺陷——那比它要修的队列死锁更隐蔽。
 >
+> **v0.8.7 新增**：心跳与主动消息（契约 §17 / §18，\`BRIDGE_VERSION\` 随之升到 \`6\`）。
+> **A 半 = 连通性心跳**：IM 侧用「\`/health\` 探测 + 该对话最近见帧时刻」**两条**判据维护
+> 每对话三态（\`online\` → \`suspect\` → \`offline\`，滞回防抖），跃迁时按
+> \`off\` / \`fixed\` / \`offline-only\` 播报固定文案（含原因与持续时长，且**不含** Markdown
+> 裸星号）。只做探测会漏掉「进程活着、这条流死了」——那正是 SSE 半开连接最常见的形态。
+> **B 半 = 自主心跳**：DSH 侧按八条闸门（\`disabled\` / \`no-session\` / \`offline\` / \`busy\` /
+> \`pending\` / \`too-soon\` / \`outside-window\` / \`quota-exceeded\`，顺序即优先级）决定是否发起
+> 一轮，由模型用沉默哨兵 \`[SILENT]\` 决定说不说；出口是**有界发件箱 +
+> \`GET /proactive?since=<游标>\` 轮询**，不是常连 SSE——\`seq\` 是每对话的，多对话复用进
+> 一条流之后 \`Last-Event-ID\` 就失去意义，而主动消息天生需要存储转发（没人在听时丢了就是丢了）。
+> 其中 \`online\` 闸门取「IM 最近在轮询」而不是同步 IM 的每对话在线态，两半因此可以分别上线。
+> 另修掉两处**已在 v0.8.6 发布版里**的同行错位（都属「字段/方法挂错类」）：
+> ①\`Main._health_task\` 被定义在 \`BridgeTransport.__init__\`，而 \`terminate\` 读的是
+> \`Main\`——\`enable=false\` 时 \`initialize\` 会提前返回、从不创建该任务，
+> 于是卸载插件就是一次 \`AttributeError\`；
+> ②\`proactive()\` 被写进了 \`Main\`，而它内部调的是 \`BridgeTransport._request\`
+> ——一段永不生效的死代码，只有真去调它才会 \`AttributeError\`，且让
+> 「传输层十二方法」那句文档变成假的。两者都不会被 \`py_compile\` 或任何静态闸门发现，
+> 是新增的假 AstrBot 上下文集成测试（含一条**泛化**的「\`Main\` 里所有 \`self._xxx\`
+> 在构造后就必须存在」检查）抓到的。
+>
 > **配置项**：\`hmacMode\`（契约 §5.2 请求体 HMAC 签名）、\`policy\` 的 \`on-demand\` /
 > \`daily\` 轮转、\`idleTtlMs\` 空闲回收均已实现；轮转与回收走
 > \`workspaceRegistry.archiveSession\`，**只归档不删历史**。DSH 侧
-> \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。另有本版新增的 \`questionsEnabled\` / \`questionTimeoutMs\`
-> （问答通道）与 \`waitTimeoutMs\`（在途投递单的等待态超时兜底；设 \`0\` 关闭）。
+> \`assertConfigIsUsable\` 对它们只做参数校验，不再加载即抛错。另有 \`questionsEnabled\` / \`questionTimeoutMs\`
+> （问答通道）、\`waitTimeoutMs\`（在途投递单的等待态超时兜底；设 \`0\` 关闭），以及本版新增的
+> \`heartbeatMs\` / \`proactiveHeartbeatMs\` / \`proactiveMinIdleMs\` / \`proactiveWindow\` /
+> \`proactiveMaxPerDay\` / \`proactivePrompt\` / \`proactiveSilentSentinel\` /
+> \`proactiveOutboxSize\` / \`proactivePollMax\` / \`proactiveImAliveMs\`（自主心跳，
+> \`proactiveHeartbeatMs\` **默认 0 = 关闭**）与 IM 侧的 \`heartbeat_frame_miss_factor\` /
+> \`heartbeat_notify\` / \`heartbeat_notify_targets\` / \`heartbeat_notify_min_gap_ms\` /
+> \`proactive_enabled\` / \`proactive_poll_ms\` / \`proactive_prefix\`。
 >
-> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
+> ⚠️ **未实测**：B 半依赖 \`agent.followup(createUserMessage({source:{kind:'plugin',…}}))\`
+> 真的能起一轮 turn，本机没有活的 DSH 宿主可验（契约 §18.8）。若它不起作用，表现是
+> 「日志说发起了、但永远没有回复」，A 半不受影响。
+>
+> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 
 ## 产物
@@ -408,4 +441,20 @@ Linux/macOS 下可一键核对：\`sha256sum -c SHA256SUMS\`
 - 设计（五层架构 + 迁移计划）：[\`docs/DESIGN.md\`](https://github.com/${REPO}/blob/main/docs/DESIGN.md)
 - 发布流程：[\`docs/RELEASING.md\`](https://github.com/${REPO}/blob/main/docs/RELEASING.md)
 `
+  // 防回归：上面那句「N 个端点全部有真实 handler」里的 N 是**算出来**的，
+  // 而端点清单是**手写**的——v0.8.6 发布说明就出过「说 11 个、清单里只有 10 个」
+  // （漏了 `POST /answer`，发出去之后才发现并 PATCH 了正文）。
+  // 这里把两者钉死：任何一条路由没被写进清单，打包直接失败。
+  const listed = new Set(
+    [...body.matchAll(/`(?:GET|POST) (\/[a-z][a-z/-]*)`/g)].map((match) => match[1]),
+  )
+  const missing = Object.values(ROUTES).filter((route) => !listed.has(route))
+  if (missing.length) {
+    fail(
+      `发布说明漏列端点：${missing.join('、')}\n` +
+      `  说明里声称 ${Object.keys(ROUTES).length} 个，实际只列了 ${listed.size} 个。` +
+      '请补齐「已实现」清单。',
+    )
+  }
+  return body
 }

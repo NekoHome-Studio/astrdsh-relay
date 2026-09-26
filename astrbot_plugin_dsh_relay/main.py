@@ -66,10 +66,12 @@ from astrbot.api.star import Context, Star
 try:  # 包内导入（正常安装路径）
     from . import allowlist
     from . import contract
+    from . import heartbeat_state as hb
     from . import location_text
 except ImportError:  # 直接以模块方式加载时的兜底，与同路线既有插件一致
     import allowlist  # type: ignore[no-redef]
     import contract  # type: ignore[no-redef]
+    import heartbeat_state as hb  # type: ignore[no-redef]
     import location_text  # type: ignore[no-redef]
 
 
@@ -171,9 +173,6 @@ class BridgeTransport:
         self._session: aiohttp.ClientSession | None = None
         self._connector: aiohttp.TCPConnector | None = None
         self._locks: dict[str, asyncio.Lock] = {}
-        #: 周期健康检查的后台任务；``terminate`` 必须 cancel 掉它，
-        #: 否则就是本插件唯一一处「游离任务」。
-        self._health_task: asyncio.Task[None] | None = None
         self._signals: dict[str, asyncio.Event] = {}
         self._last_seq: dict[str, int] = {}
 
@@ -737,6 +736,18 @@ class BridgeTransport:
             },
         )
 
+    # ---- §18 /proactive（契约 §18）-----------------------------------
+
+    async def proactive(self, *, since: int = 0) -> dict[str, Any]:
+        """``GET /proactive?since=<游标>``：取走 DSH 侧的主动消息（自主心跳的出口）。
+
+        ``since`` 同时充当 ack：服务端据此 prune 发件箱，所以游标必须**持久化**，
+        否则插件重载后首轮会以 0 去取、把剩下的全部重发一遍。
+        """
+        route = f"{contract.ROUTE_PROACTIVE}?since={int(since)}"
+        value = await self._request("GET", route)
+        return value if isinstance(value, dict) else {}
+
     async def aclose(self) -> None:
         """关闭连接池。由 ``Main.terminate`` 调用。"""
         self._closed = True
@@ -767,6 +778,17 @@ class Main(Star):
         #: 与 ``_pending`` **分开存**：审批答完即弃（一次有效），问答要能逐题补交，
         #: 合表会让"这题答过没有"和"这个审批回过没有"两套判据互相误伤。
         self._pending_answers: dict[tuple[str, str], dict[str, Any]] = {}
+        #: 周期健康检查的后台任务；``terminate`` 必须 cancel 掉它，
+        #: 否则就是本插件唯一一处「游离任务」。
+        #: ⚠️ 这些字段只能落在 **Main** 上。曾经被写进 ``BridgeTransport.__init__``，
+        #: 而 ``terminate`` 读的是 ``Main`` —— ``enable=false`` 时 ``initialize`` 直接
+        #: return、从不创建该任务，于是卸载插件就是一次 AttributeError 崩溃。
+        self._health_task: asyncio.Task[None] | None = None
+        # v6：连通性心跳（A）的每对话状态、自主心跳（B）的取件任务与 ack 游标。
+        self._hb_states: dict[str, dict[str, Any]] = {}
+        self._hb_heartbeat_ms = 15000          # 由 /health 的 heartbeatMs 刷新，两侧同口径
+        self._proactive_task: asyncio.Task[None] | None = None
+        self._proactive_cursor = 0
 
     # ---- 生命周期 ----------------------------------------------------
 
@@ -791,6 +813,17 @@ class Main(Star):
         self._health_task = asyncio.create_task(
             self._health_loop(), name="dsh_relay.health"
         )
+        # 主动消息的取件循环。它同时是 DSH 侧「有人在线听」的证据，所以即使本地静音
+        # （proactive_enabled=false）也照跑，只是不发送。
+        await self._restore_proactive_cursor()
+        self._proactive_task = asyncio.create_task(
+            self._proactive_loop(), name="dsh_relay.proactive"
+        )
+        if self._heartbeat_mode() == hb.NOTIFY_AGENT:
+            logger.warning(
+                "[dsh_relay] heartbeat_notify=agent 尚未接线（需先核实 AstrBot 的 LLM 入口），"
+                "本版按 fixed 的固定文案播报"
+            )
         try:
             info = await transport.health()
         except Exception as exc:  # noqa: BLE001 - 探测失败不得阻断插件加载
@@ -836,6 +869,9 @@ class Main(Star):
                     )
                 self._bridge_ok = True
                 self._bridge_error = None
+                # 服务端的实际心跳间隔：IM 侧的帧阈值由它乘系数算出，口径必须一致。
+                self._hb_heartbeat_ms = int(info.get("heartbeatMs") or self._hb_heartbeat_ms or 15000)
+            await self._evaluate_heartbeats()
             await asyncio.sleep(interval)
 
     # ---- 配置读取 ----------------------------------------------------
@@ -1079,6 +1115,8 @@ class Main(Star):
                     return
                 break
 
+            # 任何一帧都算「链路还活着」的证据（A 的帧判定用它，不只看心跳帧）。
+            self._touch_frame(event.unified_msg_origin)
             kind = str(item.get("type") or "")
             if kind not in contract.KNOWN_EVENT_TYPES:
                 continue  # 未知类型必须忽略（前向兼容，契约 §4）
@@ -1860,6 +1898,156 @@ class Main(Star):
             return "桥接端没有这个端点：检查 bridge_url 的 pathPrefix。"
         return _prefixed_failure("桥接调用失败", exc)
 
+    # ---- v6：连通性心跳（A）与自主心跳（B）------------------------------
+
+    def _touch_frame(self, umo: str) -> None:
+        """任何一帧到达都刷新该对话的「最后见帧」时刻。
+
+        用**任何帧**而不是只认心跳帧：代理可能吞掉某一类帧，只有当完全没有帧到达时
+        才说明链路死了；这也天然避开「长 turn 里没有心跳」的误判。
+        首次见到某对话时按**在线**建档——否则刚连上就会被当成掉线。
+        """
+        if not umo:
+            return
+        entry = self._hb_states.get(umo)
+        if entry is None:
+            entry = {
+                "state": hb.STATE_ONLINE,
+                "last_frame_at": 0,
+                "last_notify_at": 0,
+                "offline_since": 0,
+            }
+            self._hb_states[umo] = entry
+        entry["last_frame_at"] = _now_ms()
+
+    def _heartbeat_targets(self) -> list[str]:
+        """播报范围：配了白名单就只播这些；空 = 已知的全部对话。"""
+        allow = self._cfg("heartbeat_notify_targets", []) or []
+        if isinstance(allow, (list, tuple, set)) and allow:
+            return [str(item).strip() for item in allow if str(item).strip()]
+        return list(self._hb_states.keys())
+
+    def _heartbeat_mode(self) -> str:
+        mode = str(self._cfg("heartbeat_notify", hb.NOTIFY_OFF) or hb.NOTIFY_OFF)
+        return mode if mode in hb.VALID_NOTIFY_MODES else hb.NOTIFY_OFF
+
+    async def _evaluate_heartbeats(self) -> None:
+        """按 probe 结果 + 帧间隔重算每个对话的在线态，并在**跃迁**时按策略播报。
+
+        由 ``_health_loop`` 的每一轮驱动（成功与失败都驱动）：探测失败要立刻落成
+        掉线，不能等下一个成功周期。``heartbeatMs`` 由 ``/health`` 回传，两侧口径一致。
+        """
+        mode = self._heartbeat_mode()
+        factor = int(self._cfg("heartbeat_frame_miss_factor", 3) or 3)
+        miss_ms = hb.frame_miss_ms_of(self._hb_heartbeat_ms, factor)
+        min_gap = int(self._cfg("heartbeat_notify_min_gap_ms", 600000) or 0)
+        now = _now_ms()
+        targets = set(self._heartbeat_targets())
+        for umo, entry in list(self._hb_states.items()):
+            current = hb.next_state(
+                state=entry["state"],
+                now_ms=now,
+                probe_ok=bool(self._bridge_ok),
+                last_frame_at=int(entry["last_frame_at"]),
+                frame_miss_ms=miss_ms,
+            )
+            kind = hb.transition_kind(entry["state"], current)
+            entry["state"] = current
+            if current == hb.STATE_OFFLINE:
+                if not entry["offline_since"]:
+                    entry["offline_since"] = now
+            else:
+                entry["offline_since"] = 0
+            if kind is None or umo not in targets:
+                continue
+            if not hb.should_notify(
+                kind=kind, mode=mode, now_ms=now,
+                last_notify_at=int(entry["last_notify_at"]), min_gap_ms=min_gap,
+            ):
+                continue
+            entry["last_notify_at"] = now
+            await self._notify_heartbeat(umo, kind, entry)
+
+    async def _notify_heartbeat(self, umo: str, kind: str, entry: dict[str, Any]) -> None:
+        """播报一次连通性跃迁。
+
+        ⚠️ 这里**只发固定文案**。``heartbeat_notify=agent``（由模型决定说不说、说什么）
+        还没接线：那需要先核实 AstrBot 的 LLM 调用入口，按本项目惯例不接受「大概是」。
+        该模式若被手工写进配置，加载期会 warn 一次并退化为固定文案——不假装它已生效。
+        """
+        offline_ms = _now_ms() - int(entry.get("offline_since") or 0)
+        text = hb.format_fixed_notice(
+            kind, conversation=umo, error=str(self._bridge_error or ""), offline_ms=offline_ms,
+        )
+        if not text:
+            return
+        sent = await self.push_to_session(umo, text)
+        logger.info(
+            f"[dsh_relay] 心跳播报（{kind}）-> {umo}："
+            f"{'已发送' if sent else '未匹配到平台，未发出'}"
+        )
+
+    async def _restore_proactive_cursor(self) -> None:
+        """恢复主动消息的 ack 游标。
+
+        不恢复的话，插件重载后首轮会以 ``since=0`` 去取——而服务端只在收到
+        ``since>0`` 时才 prune，于是会把发件箱里剩下的全部**重发一遍**。
+        """
+        for call in (
+            lambda: self.get_kv_data("proactive_cursor", 0),
+            lambda: self.get_kv_data("proactive_cursor"),
+        ):
+            try:
+                value = await call()
+            except TypeError:
+                continue  # 该版本 get_kv_data 的签名不带 default，换一种再试
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[dsh_relay] 读取主动消息游标失败（按 0 起）：{exc}")
+                return
+            self._proactive_cursor = int(value or 0)
+            return
+
+    async def _proactive_loop(self) -> None:
+        """按 ``proactive_poll_ms`` 周期取主动消息。
+
+        这条循环**同时也是 DSH 侧 gates 里 ``online`` 的证据**：DSH 只在自己被轮询过
+        时才发起心跳（没人在听时发起等于白烧一次 LLM 调用、且回复没人取）。
+        因此即使 ``proactive_enabled=false``（本地静音）也照样轮询，只是不发送。
+        """
+        interval = max(1000, int(self._cfg("proactive_poll_ms", 5000) or 5000)) / 1000.0
+        while True:
+            try:
+                await self._poll_proactive()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 轮询失败不影响插件其余部分
+                logger.warning(f"[dsh_relay] 主动消息轮询失败：{exc}")
+            await asyncio.sleep(interval)
+
+    async def _poll_proactive(self) -> None:
+        data = await self._transport_or_create().proactive(since=self._proactive_cursor)
+        items = data.get("items") if isinstance(data, dict) else None
+        cursor = data.get("cursor") if isinstance(data, dict) else None
+        deliver = bool(self._cfg("proactive_enabled", True))
+        prefix = str(self._cfg("proactive_prefix", "") or "")
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            umo = str(item.get("conversation") or "")
+            if not text or not umo:
+                continue
+            if not deliver:
+                # 静音时**照样推进游标**：否则恢复开关的一瞬间会把静音期间攒下的
+                # 全部主动消息一次性补发，那比不静音更糟。
+                continue
+            await self.push_to_session(umo, f"{prefix}{text}")
+            logger.info(f"[dsh_relay] 主动消息已发送 -> {umo}（{len(text)} 字）")
+        if isinstance(cursor, int) and cursor > self._proactive_cursor:
+            self._proactive_cursor = cursor
+            with contextlib.suppress(Exception):
+                await self.put_kv_data("proactive_cursor", cursor)
+
     async def push_to_session(self, umo: str, text: str) -> bool:
         """主动推送（不经事件）。
 
@@ -1905,6 +2093,11 @@ class Main(Star):
             # wait 只负责等它真的停下来。
             with contextlib.suppress(Exception):
                 await asyncio.wait({task})
+        if self._proactive_task is not None:
+            task, self._proactive_task = self._proactive_task, None
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.wait({task})
         self._pending.clear()
         if self._transport is not None:
             await self._transport.aclose()
@@ -1916,6 +2109,10 @@ class Main(Star):
 # ──────────────────────────────────────────────────────────────────────
 # 纯函数
 # ──────────────────────────────────────────────────────────────────────
+
+def _now_ms() -> int:
+    """当前毫秒时间戳。心跳的帧间隔判定统一用它，避免各处各写一遍 ``time.time() * 1000``。"""
+    return int(time.time() * 1000)
 
 def _match_prefix(raw: str, prefix: str) -> "str | None":
     """前缀匹配，返回**前缀之后的原文**（未 `strip`）；不匹配返回 `None`。

@@ -140,5 +140,48 @@
     "description": "重试最大退避（毫秒）",
     "type": "int",
     "default": 30000
+  },
+  "heartbeat_frame_miss_factor": {
+    "description": "帧间隔阈值系数（连通性心跳）",
+    "type": "int",
+    "default": 3,
+    "hint": "阈值 = 服务端 heartbeatMs × 本值；超过一个阈值判「可疑」、超过两个判「掉线」，滞回是为了防抖动刷屏"
+  },
+  "heartbeat_notify": {
+    "description": "连通性变化的播报策略",
+    "type": "string",
+    "default": "off",
+    "options": ["off", "fixed", "offline-only"],
+    "hint": "off=只写日志；fixed=掉线与恢复都播报固定文案；offline-only=只播掉线。由模型组织文案的 agent 模式尚未接线（需先核实 AstrBot 的 LLM 入口），故不在选项里"
+  },
+  "heartbeat_notify_targets": {
+    "description": "播报白名单（UMO 列表，空=已知的全部对话）",
+    "type": "list",
+    "default": [],
+    "hint": "填 unified_msg_origin，形如 default:GroupMessage:123456"
+  },
+  "heartbeat_notify_min_gap_ms": {
+    "description": "同一对话两次播报的最小间隔（毫秒）",
+    "type": "int",
+    "default": 600000,
+    "hint": "防链路抖动导致的反复刷屏；首次掉线不受它限制"
+  },
+  "proactive_enabled": {
+    "description": "接收 DSH 主动发来的消息（自主心跳的出口）",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉只是本地静音：仍会继续轮询（那是 DSH 判断「有人在线听」的依据），但收到也不发；游标照常推进，恢复时不会补发旧的"
+  },
+  "proactive_poll_ms": {
+    "description": "主动消息轮询间隔（毫秒）",
+    "type": "int",
+    "default": 5000,
+    "hint": "不可设 0：这条循环同时是 DSH 侧「有人在线听」的证据，停掉它等于把自主心跳一并关掉"
+  },
+  "proactive_prefix": {
+    "description": "主动消息前缀",
+    "type": "string",
+    "default": "",
+    "hint": "留空则原样发送；想加「（主动）」之类标记就填这里"
   }
 }

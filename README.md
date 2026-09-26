@@ -12,13 +12,15 @@
 
 > 当前 `main` 已打通 **P1 + P2 全链路**：IM 消息 → DSH agent 会话 → 流式回帖 + 审批转发。
 > 契约预留的三项配置也已接线（`hmacMode` / `policy` 的 `on-demand`·`daily` 轮转 /
-> `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。最新发布：`v0.8.6`。
+> `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。
+> v0.8.7 起另有**心跳**：IM 侧的连通性播报（A）与 DSH 侧的自主心跳（B，默认关）。
+> 最新发布：`v0.8.7`。
 
 ## 交付物地图
 
 | 文件 | 是什么 |
 |---|---|
-| `docs/BRIDGE-CONTRACT.md` | **接口契约 v3**。两侧唯一真相来源：拓扑、会话键、9 个端点（含 §13 工作区改指、§14 分支）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批流程。 |
+| `docs/BRIDGE-CONTRACT.md` | **接口契约 v6**。两侧唯一真相来源：拓扑、会话键、12 个端点（含 §13 工作区改指、§14 分支、§15 会话认领、§16 问答、§18 主动消息取件）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批与问答流程、§17 心跳。 |
 | `docs/DESIGN.md` | **五层设计（核实修正版）**。含「原始设计假设 vs 源码事实」的 12 条差异修正表、分阶段计划、跨机部署清单、风险登记。 |
 | `docs/dsh-side-capabilities.md` | DSH 侧 API 核实报告（1590 行，逐条 `路径:行号` 证据）。 |
 | `docs/astrbot-side-capabilities.md` | AstrBot 侧 API 核实报告（1889 行，逐条证据）。 |
@@ -26,8 +28,8 @@
 | `docs/control-plane-transport.md` | 控制面传输可行性调研：能否在进程内调用/转发 DSH host RPC（决定替代成本）。 |
 | `.probe/probe-api.mjs` | 控制面调研的可复现**只读**探针脚本（自签 cookie 走 33 个 endpoint，验证点号写法全 404、斜杠写法 200）。 |
 | `docs/evidence/` | 实跑固化证据（`dsh --profile web --dump-config` 的实际层组合输出）。 |
-| `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js`，九个端点全部落地）。 |
-| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py`，传输层九个方法全部实现）。 |
+| `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js` / `lib/proactive.js`，十二个端点全部落地）。 |
+| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十二个方法全部实现）。 |
 | `docs/RELEASING.md` | 发版流程：统一版本规则、tag 约定、产物形态与原因、CI 检查项。 |
 | `scripts/package-release.mjs` | 打包脚本：校验 tag 与两侧版本 → 产出 tgz + zip + SHA256SUMS + 发布说明。 |
 | `scripts/check-contract-parity.mjs` | 两侧契约常量一致性闸门（事件类型 / 错误码 / 路由 / 版本）。 |
@@ -60,10 +62,11 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 流程细节、产物形态的理由、CI 检查项见 `docs/RELEASING.md`。
 
 > **`v0.3.0` 起是可运行实现**：`/health`、`/where`、`/conversations`、`/message`、
-> `/events`（SSE 流式）、`/approval`、`/workspaces`、`/session/rebind`、`/session/fork`、
-> `/session/adopt` 十个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
+> `/events`（SSE 流式）、`/approval`、`/answer`（问答回执）、`/workspaces`、
+> `/session/rebind`、`/session/fork`、`/session/adopt`、`/proactive`（主动消息取件）
+> 十二个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
 > `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` /
-> `send_approval` / `aclose` 全部实现。
+> `send_approval` / `send_answer` / `proactive` / `aclose` 全部实现。
 > 自动生成的发布说明会如实列出「已实现」与「未实现」；当前已无未实现项。
 
 ## 指令速查（AstrBot 侧）

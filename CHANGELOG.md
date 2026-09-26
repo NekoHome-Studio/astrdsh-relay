@@ -1,5 +1,100 @@
 # 更新日志
 
+## v0.8.7 — 2026-09-26
+
+> 心跳与主动消息。两半可以分别上线：只有 A 时 B 不发，只有 B 时 A 不报。
+> 契约新增 **§17（连通性心跳）** 与 **§18（发件箱与主动消息）**。
+
+### 新增
+
+- **连通性心跳（A 半，纯在 IM 侧闭环）**：用**两条**判据维护每对话三态——
+  ①`GET /health` 探测成功与否；②该对话最近一次收到**任何**下行帧的时刻。
+  只做探测会漏掉「进程活着、这条流死了」（SSE 半开连接最常见的形态）；
+  只看见帧会漏掉「一直没有任何帧的对话」。`online → suspect → offline` 带**滞回**
+  （超过一个阈值判可疑、两个判掉线），`suspect` 就是防抖带、不给用户看。
+  **从未见过帧的对话永不判离线**，新建档按在线——否则刚连上就会误报。
+  刷新点只有一处（`_consume_turn` 入口、在心跳帧的过滤**之前**），所以新加帧类型
+  不会漏刷新。阈值 `= max(1000, heartbeatMs) × heartbeat_frame_miss_factor`，
+  其中 `heartbeatMs` 由 `/health` 回传（**两侧同源**，自写一个只会得到只有用户能发现的偏差）。
+  跃迁时按 `heartbeat_notify` 播报：`off`（默认，只写日志）/ `fixed` / `offline-only`，
+  另有 `heartbeat_notify_targets` 白名单与 `heartbeat_notify_min_gap_ms`（默认 600000，
+  首次掉线不受限）。文案为固定文案（含原因与持续时长，**不含** Markdown 裸星号）。
+- **自主心跳（B 半）**：DSH 侧按**八条闸门**（顺序即优先级：`disabled` / `no-session` /
+  `offline` / `busy` / `pending` / `too-soon` / `outside-window` / `quota-exceeded`）
+  决定是否发起一轮，由模型用**沉默哨兵** `[SILENT]`（整条等于才抑制，**不做子串匹配**）
+  决定说不说。新增配置 `proactiveHeartbeatMs`（**默认 0 = 关闭**）、`proactiveMinIdleMs`
+  （1800000）、`proactiveWindow`（空 = 不限，支持跨零点，边界闭区间）、`proactiveMaxPerDay`
+  （4，0 = 不限）、`proactivePrompt`、`proactiveSilentSentinel`、`proactiveOutboxSize`（20）、
+  `proactivePollMax`（50）、`proactiveImAliveMs`（180000）。
+  三条硬约束：①`offline` 排在 `busy` **之前**（离线时既发不出去也没人听，先报更根本的原因）；
+  ②**配额在「发起」时递增**，不在「入发件箱」时（这一轮无论说不说，LLM 的钱都花了）；
+  ③用独立的 `proactiveLastAt`，**不碰** `records.lastActiveAt`（后者是空闲回收与跨日轮转的判据）。
+- **有界发件箱 + `GET /proactive?since=<全局游标>` 轮询**（B 的出口）。
+  `id` 全局自增，一次调用可跨对话取走；`since` **同时是 ack**，服务端据此 prune。
+  IM 侧 `proactive_enabled=false` 只是**本地静音**：仍轮询、仍推进游标、只是不发送——
+  否则恢复开关的一瞬间会把静音期间攒下的全部主动消息一次性补发，比不静音更糟。
+  **游标持久化到插件 KV**：不持久化的话，重载后首轮以 `since=0` 取件（`since>0` 才 prune），
+  发件箱里剩下的会被**重发一遍**。
+- **`online` 闸门取「IM 最近在轮询」**，而不是在 DSH 侧同步 IM 的每对话在线态：
+  IM 还在轮询就说明有人听得见；它没在轮询时发起心跳 = 白烧一次 LLM 调用且回复没人取。
+  这条口径同时让两半**解耦**。
+- 心跳轮的输出**不进正常下行通道**：`push()` 加了总闸门，`proactiveTurn` 非空时一律不发
+  （审批与问答的推送显式带 `visibleDuringProactive: true` 放行）。否则 `[SILENT]`
+  会以文本增量的形式先漏出去。
+
+### 修复
+
+- **`Main._health_task` 被定义在 `BridgeTransport.__init__`，而 `terminate()` 读的是 `Main`
+  ——v0.8.6 发布版里就有的缺陷。** `enable=false` 时 `initialize()` 直接 `return`、
+  从不创建该任务，于是卸载插件就是一次 `AttributeError`。本版新增的四个生命周期字段
+  （`_hb_states` / `_hb_heartbeat_ms` / `_proactive_task` / `_proactive_cursor`）
+  一开始也落在了同一个错地方，**任何一条消息都会崩**。
+- **同一族的第二处：`proactive()` 方法被写进了 `Main`，而它内部调的是
+  `BridgeTransport._request`。** 它是一段**永不生效的死代码**：`_poll_proactive()`
+  走的是 `self._transport_or_create().proactive(...)`，因此测试全绿、运行时也不报错，
+  只有真去调 `Main.proactive()` 才会 `AttributeError`。已移回 `BridgeTransport`
+  （这才是「传输层十二方法」里第 11 个方法该在的地方——移之前那句文档是**假的**）。
+- 这两处错位 `py_compile`、`bridgeVersion` 校验、静态复核**全都看不出来**——
+  抓到它们的是新增的「假 AstrBot 上下文」集成测试（`scripts/test-im-heartbeat.py`）。
+  其中第二条不是靠「多写一条断言」抓到的，而是那条**泛化**测试：从源码里抠出
+  `Main` 类体中**所有** `self._xxx`，要求「刚 new 出来的实例上就都有」。
+  纯逻辑单测永远测不到接线层，这是本版最该记住的一条。
+
+### 变更
+
+- **`bridgeVersion` 5 → 6**：新增 `/proactive` 路由与 `/health.heartbeatMs`。
+  按「老客户端会不会坏」的口径两者都是纯增量，**不升版就会静默半死**——
+  v5 的 IM 不会去调 `/proactive`，`online` 闸门于是永远不开，B 永远不触发，
+  且没有任何报错。升版是为了把这种半死状态换成启动期的一条明确报错。
+  **v5 与 v6 不能混合部署**，两侧必须同时升级。契约 §10 已写入依据。
+- 路由 11 → **12** 条（`GET /proactive`）；事件类型仍为 12 个（心跳轮不新增事件类型）。
+- 新增两道纯逻辑闸门与两道接线闸门，全部接进 `npm test`：
+  `scripts/test-proactive.mjs`（19）、`scripts/test-heartbeat-state.py`（20）、
+  `scripts/test-proactive-chain.mjs`（9，真起 `ctx.effect` 定时器跑 `proactiveTick`）、
+  `scripts/test-im-heartbeat.py`（20，桩掉 `astrbot.*` 后真跑 `Main` 的方法）。
+- 纯逻辑抽取沿用既有套路（零外部 import，因此**不装 dsh / AstrBot 依赖**即可单测）：
+  `dsh-astrbot-relay/lib/proactive.js`、`astrbot_plugin_dsh_relay/heartbeat_state.py`。
+
+### 文档
+
+- 契约**补写 §16（用户问答通道）**：v0.8.6 的代码与 CHANGELOG 早已按「契约 §16」引用它，
+  但那一章当时从未写下——是个**悬空引用**。本次补齐，并把 §7.3 里过时的
+  「v1 不实现」改成指向 §16。同批补上 §4 事件表缺失的 `question/required` /
+  `question/resolved` 两行（此前表里 10 行、常量表 12 个，对不上）。
+- 契约新增 §17（连通性心跳）、§18（发件箱与主动消息），含 §18.8 的**未实测项**。
+- `docs/PLAN-heartbeat.md` 记入**决策更新**：原推荐的「常连 SSE」在实现期被放弃，
+  改用发件箱 + 轮询。两个硬伤：①`seq` 是**每对话**的，多对话复用后 `Last-Event-ID`
+  无法表达「我收到哪儿了」；②SSE 是瞬时的，而主动消息天生需要**存储转发**
+  （没人在听时丢了就是丢了）。§6.1 新增「实现期真的踩到的坑」。
+
+### 未实测（诚实声明）
+
+- **B 半的地基未验证**：`agent.followup(createUserMessage({source:{kind:'plugin',…}}))`
+  是否真能起一轮 turn，本机没有活的 DSH 宿主可验（契约 §18.8）。若它不起作用，
+  表现是「日志说发起了、但永远没有回复」，A 半不受影响。
+- A 的**误报率**只在读码层面确认（长 turn 期间桥接端有两条 15 秒心跳在跑，
+  且任何帧都刷新），未做真实代理环境的长跑验证。
+
 ## v0.8.6 — 2026-09-26
 
 > 本版**合并了原计划的 v0.8.5**：那批改动（在途投递单 + 用户问答链）此前只进过 `main`，

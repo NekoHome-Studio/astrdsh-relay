@@ -129,12 +129,22 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 
 `ci.yml` 在 push 到 `main` 与所有 PR 上跑：
 
-- DSH 侧 `node --check`（两个 JS 文件）；
-- AstrBot 侧 `python -m py_compile`（两个 py 文件，骨架不 import astrbot，故无需装依赖）；
+- `python -m py_compile` 编译 AstrBot 侧的 5 个 py 文件（`py_compile` **只编译不执行**，
+  所以 `main.py` 里 `import astrbot` / `import aiohttp` 都不影响这一步）；
+- DSH 侧 `node --check` 遍历 `lib/` 下**全部** JS（新增文件不必回来改 workflow）；
 - 两侧契约常量一致性（`scripts/check-contract-parity.mjs`）；
+- 两侧纯逻辑单测 + 两套**假宿主**接线测试（见 `package.json` 的 `test` 链）；
 - 版本一致性闸门；
 - 完整打包冒烟：Node 22 与 Node 24 各真打一遍，两轮的 `SHA256SUMS` 必须逐字节相同，
   并 `sha256sum -c` 核对（`--check` 不执行归档器，所以这里跑的是真打包）。
+
+> **CI 只装一个 Python 依赖**：`pip install -r astrbot_plugin_dsh_relay/requirements.txt`
+> （即 `aiohttp`）。它之所以必要，是因为 `scripts/test-im-heartbeat.py` 会 import
+> **生产模块 `main.py`**，而后者顶部有 `import aiohttp`。aiohttp 是插件**声明的
+> PyPI 依赖**，不是宿主 API，所以装它不算「把宿主装进 CI」；
+> 其余 Python 闸门都是零依赖纯函数。**刻意不装 astrbot**——那是宿主，靠桩。
+> 该测试在缺少 aiohttp 时**直接失败并给出安装命令**，不静默跳过：
+> 静默跳过正是「本地全绿、CI 没跑」那类漂移的来源。
 
 ## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 
@@ -145,10 +155,13 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
   （`policy` 必须落在枚举内、`idleTtlMs` 必须是有限正数），不再「加载即抛错」。
   轮转与回收走 `workspaceRegistry.archiveSession`，**只归档不删历史**。
 - 端点面：`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
-  `/approval`、`/workspaces`、`/session/rebind`、`/session/fork`、`/session/adopt`
-  十个端点全部可用；AstrBot 侧 `BridgeTransport` 的 `health` / `where` / `workspaces` /
-  `rebind` / `fork` / `adopt` / `send_message` / `events` / `send_approval` /
-  `aclose` 全部实现。
+  `/approval`、`/answer`、`/proactive`、`/workspaces`、`/session/rebind`、`/session/fork`、
+  `/session/adopt` 十二个端点全部可用；AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
+  `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` / `send_approval` /
+  `send_answer` / `proactive` / `aclose` 全部实现。
+- **一处未实测**（`v0.8.7` 起）：自主心跳（B 半）依赖
+  `agent.followup(createUserMessage({source:{kind:'plugin',…}}))` 真能起一轮 turn，
+  本机没有活的 DSH 宿主可验（契约 §18.8）。A 半（连通性心跳）不受影响。
 
 自动生成的 `RELEASE_NOTES.md` 会在开头显式声明「已实现 / 未实现」。当前**已无未实现项**；
 将来若再预留配置，必须在这里补回该声明，**在落地之前不得移除**。

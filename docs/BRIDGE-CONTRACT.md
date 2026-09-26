@@ -1,6 +1,6 @@
 # AstrDsh Relay（星驿）接口契约（草案 / 冻结候选）
 
-> 状态：**设计冻结候选**；当前 `bridgeVersion = "5"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
+> 状态：**设计冻结候选**；当前 `bridgeVersion = "6"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
 > `docs/astrbot-side-capabilities.md`、`docs/dsh-side-capabilities.md`）；
 > 标记 `【未核实】` 的条项**不得**在实现阶段当作既成事实使用。
 >
@@ -171,15 +171,22 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "5",
+  "bridgeVersion": "6",
   "dshVersion": "0.1.5-rc.2",
   "uptimeMs": 123456,
-  "conversations": 3
+  "conversations": 3,
+  "heartbeatMs": 15000
 }
 ```
 
 IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不匹配时
 **拒绝启用桥接并明确报错**，不做猜测性降级。
+
+`heartbeatMs`（v6 新增）是 **SSE 下行心跳帧的间隔**（服务端 `config.heartbeatMs`，
+默认 15000；两个用途同一个值：`/events` 里的 `event: heartbeat`，以及周期广播帧）。
+它同时被 IM 侧用作「多久没收到任何帧就算链路可疑」的基准（§17.3）。两侧必须用同一个数：
+若 IM 自己另配一个比服务端更短的阈值，长 turn 期间（本就没有别的帧）会被误判掉线。
+缺字段时 IM 侧退回自己的默认值，**不得当作 0**（0 会让阈值缩到 0，见面即判掉线）。
 
 ---
 
@@ -193,6 +200,8 @@ IM 侧启动时与周期性（`healthIntervalMs`）调用。`bridgeVersion` 不�
 | `tool/call` | `callId`, `name`, `argsPreview` | `session/event` → `'tool-call-delta'` 聚合后 |
 | `approval/required` | `callId`, `code`, `toolName`, `reason`, `expiresAt` | `approval/request` waterfall |
 | `approval/resolved` | `callId`, `outcome` | 同上，决议后回填 |
+| `question/required` | `callId`, `expiresAt`, `questions[]` | `user-questions/request` waterfall（契约 §16） |
+| `question/resolved` | `callId`, `via`, `answered` | 同上，结算后回填（§16.1） |
 | `message/final` | `text` | `session/event` → `assistant/message`（**权威最终文本**） |
 | `turn/end` | `reason: { kind, error? }` | `session/event` → `turn/end` |
 | `heartbeat` | — | 插件自建定时器 |
@@ -337,9 +346,10 @@ DSH 内 agent 触发敏感工具
 
 ### 7.3 提问（`user-questions/request`）
 
-同为 waterfall，返回 `AskUserQuestionAnswer`【已证实签名】。v1 **不实现**，
-原因：交互式多选题在 IM 里的降级形态需要单独设计（编号回复、多轮澄清），
-且不是用户原始五层设计的必需项。列入 §9 未决。
+同为 waterfall，返回 `AskUserQuestionAnswer`【已证实签名】。
+
+> **v1 曾标记「不实现」，v5 起已实现**——完整章见 **§16**。这里原来写的
+> 「交互式多选题在 IM 里的降级形态需要单独设计」正是 §16 要回答的问题。
 
 ---
 
@@ -388,7 +398,7 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "5"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "6"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
@@ -418,7 +428,18 @@ DSH 内 agent 触发敏感工具
   （见 `dsh-astrbot-relay/lib/index.js` 的 `settleInflight` 及其三个调用点）。
   同一份字段、不同的时序，正是上面「修改既有字段语义**必须**递增」所指的情形——
   IM 侧若曾依赖「idle 才放闸」来安排下一封消息，升版后会观察到时序变化。
-  代价照旧：**v4 与 v5 不能混合部署**。
+  §16 的问答通道也在这一版落地，但它是纯增量（新端点 + 新事件），**未**单独计一次升版。
+  §16 的**成文**迟了一版：v0.8.6 的代码与 CHANGELOG 早已按 §16 引用它，文档却在 v6 才补上
+  ——那段时间里「契约 §16」是个悬空引用，这是文档债，不是设计。
+  `attaching` 那条才是 v5 升版的理由。代价照旧：**v4 与 v5 不能混合部署**。
+- **v5 → v6 是「加了路由，但不升就会静默半死」的一次。** §17/§18 新增一条下行取件
+  路由 `/proactive` 与一个 `/health` 字段 `heartbeatMs`。按前面「老客户端会不会坏」
+  的口径，两者都是纯增量：v5 的 IM 不会去调 `/proactive`，也读不到新字段。**它不会坏，
+  它会安静地什么都不做**——而这次两半功能（A 的连通性播报、B 的自主心跳）恰好跨两侧：
+  没有轮询，DSH 侧的 `online` 闸门永远不开，B 永远不会触发；IM 侧则因为没有
+  `heartbeatMs` 而拿到一个与服务端不同口径的阈值。这正是最糟的失败形态：没有报错、
+  没有日志异常，只有「功能像没装」。版本号在这里换来的不是兼容性保护（旧版本来也不会坏），
+  而是**把半死状态变成启动期的一条明确报错**。代价照旧：**v5 与 v6 不能混合部署**。
 
 ---
 
@@ -1073,3 +1094,261 @@ IM 侧按「本对话本来就指着它，不用认领」回话，不报错。
    只保证**映射换了**，不保证**立刻聊得起来**。resume 失败按 §3 的普通 `/message` 失败处理——
    这是有意的：把 `resume` 塞进 `adopt`，会让这条路由的成败取决于宿主当时能不能拉起目标目录，
    失败面比收益大。
+
+---
+
+## 16. 用户问答通道（v5 新增；本章补写于 v6）
+
+> 宿主的 `ask_user_question` 工具会通过 **Agent 作用域**的 `user-questions/request`
+> waterfall 向用户提问。本章是它的桥接形态。**与审批是两条严格分离的通道**——
+> 不是同一套东西的两种载荷。
+
+### 16.1 端点与事件
+
+| 方向 | 名称 | 载荷要点 |
+|---|---|---|
+| 下行 | `question/required` | `callId`、`expiresAt`、`questions[]`（已投影，见 §16.4） |
+| 下行 | `question/resolved` | `callId`、`via`（`im` / `timeout` / `abort` / `retarget`）、`answered`（布尔，不是说答案本身） |
+| 上行 | `POST /answer` | `{conversation, callId, answers[]}` |
+
+`answers[]` 的每一项是 `{id, selected[], custom?}`：
+`id` **必填**；`selected` 是选项**文本**（不是序号，序号是 IM 侧的本地约定）；
+`custom` 是自由作答。
+
+### 16.2 为什么必须与审批分开
+
+`bridge.questions` 与 `bridge.approvals` **各存各的**，`callId` 前缀也不同
+（问答 `im-q-` / 审批 `im-`）。合表会让两套判据互相误伤：
+
+| | 审批 | 问答 |
+|---|---|---|
+| 一次结论就完事？ | **是**（`allowed-once` / `rejected`） | **否**：多题要能**逐题补交** |
+| 中途状态有意义吗？ | 无 | 有（「这题答过没有」） |
+| `callId` 反查 | 按 code → callId | 同左，但**答案**也要按题累积 |
+
+IM 侧同理：`_pending`（审批）与 `_pending_answers`（问答）是两张表，
+后者形如 `(会话键, code) → {callId, deadline, questions, answers}`。
+**只有 `len(answers) >= len(questions)` 时才碰网桥**——中途作答只落本地表，
+少一次无谓的 `400`，就少一次「答案被吞」的机会。
+
+### 16.3 IM 侧的降级形态（这就是 §7.3 说的「需要单独设计」）
+
+多选题在 IM 里的形态是**编号 + 一次性验证码 + 逐题补交**：
+
+- 每个问题编号 `1..n`，每个选项在该题内编号 `[1] [2] [3]`；
+- 一条命令作答：单题 `/dsh answer <验证码> <选项序号|自由文字>`；
+  多题 `/dsh answer <验证码> <问题序号> <选项序号|文字>`；
+- 多选用逗号分隔（`1,3`），提示语里明确写出来；
+- 纯数字一律解释为**选项序号**，非数字（或超出范围）解释为**自由文字**；
+- 答齐之前不回执，可以分几条消息慢慢答；
+- 超过 `questionTimeoutMs`（默认 300000）未答齐，这次提问作废。
+
+`code` 是 4 位数字（与审批同长度 `APPROVAL_CODE_LENGTH`），且**避开本会话表上
+已存在的号码**——同一个群里两次提问撞码是最容易踩的坑。用户只看得到 `code`，
+`callId` 由本地表反查。
+
+### 16.4 投影：只带 IM 渲染必需的字段
+
+`renderQuestion` 只保留 `id` / `question` / `header` / `options` / `multiSelect`。
+契约里的 `detail` / `intent` 是给 Web UI 的，转发过去只会让 IM 侧多写无用分支。
+注意口径差异：**本桥对 IM 的输出统一用驼峰**（`multiSelect`），而宿主入参写作
+`multi_select`。
+
+### 16.5 fail-closed 与幂等
+
+1. **`answers` 筛完一条都不剩 ⇒ 当作「没答」**，回 `unsupported`（400）。
+   **绝不**把空数组当成「用户明确选择了什么都不选」塞回工具。
+2. **`questions` 为空**（`EMPTY_QUESTIONS`）⇒ 直接拒绝，不挂 waterfall。
+3. **已决议 / 已超时 ⇒ 一律 `agent_busy`（409）**，与审批同语义：重试同一个请求
+   不会成功，所以不是 `unsupported`。
+4. **超时由 DSH 侧结算**（`expiresAt`）：`/answer` 拿到过期的 `callId` 时会先
+   `settle(null, 'timeout')` 再回 409。IM 侧另有一份本地 `deadline` 只用于**早退提示**，
+   权威判定始终在 DSH 侧。
+5. **IM 侧不替宿主撤销 turn**：`questionsEnabled=false` 时直接 `next()`（不接管），
+   宿主走自己的默认路径。
+
+### 16.6 一处诚实说明
+
+`normalizeAnswers` 的 `custom` 只判 `.trim()` 非空，但返回值**原样保留**（不回写
+trim 后的值）；`selected` 里的纯空白项（`'  '`）因为 `filter(Boolean)` 只去空串而
+**会被保留**。这两条是**既有行为**，改动属于行为变更，要单独进 CHANGELOG。
+
+另有一处已修的缺陷值得记形状：`askQuestions` 里 abort 判定曾排在
+`bridge.questions.set(callId, …)` **之前**，而唯一结算出口 `finish` 的第一句是
+`if (!bridge.questions.has(callId)) return` —— 预中止时表里还没有这个 callId，
+于是 `finish` 直接早退，Promise 既不 resolve 也不 reject，**turn 永久不闭合**。
+修法：把「建表项 + 挂定时器」提到 signal 判定之前，并加 `announced` 标记，
+使从未对外宣告过的问答不再补发 `question/resolved` 孤儿帧（CHANGELOG v0.8.6）。
+
+---
+
+## 17. 连通性心跳（v6 新增，A 半）
+
+> 目标：**「链路断了」和「对方还在但就是不说话」要能分开**。前者要如实告诉用户，
+> 后者不该被当成故障。这一半**纯在 IM 侧闭环**，不需要 DSH 配合（只有一个
+> `/health` 字段是为了对齐阈值口径）。
+
+### 17.1 两条判据，而不是一条
+
+| 判据 | 来源 | 抓得到 | 抓不到 |
+|---|---|---|---|
+| **探测** | IM → DSH `GET /health` 成功/失败 | 桥接进程死了、端口不通、鉴权/版本变了 | 桥接活着但**这条对话的下行通道**卡住 |
+| **见帧** | 该对话最近一次收到任何下行帧的时刻 | 上面那一类（连接半开、代理吞流、只有某个对话的订阅断了） | 桥接彻底死了但 `last_frame_at` 恰好还新（最多骗过一个阈值） |
+
+**两条都过才算在线。** 只做探测会漏掉「进程活着、这条流死了」——那正是
+SSE 半开连接最常见的形态；只做见帧会漏掉「一直没有任何帧的对话」。
+
+### 17.2 状态机（滞回，三态）
+
+`online → suspect → offline`，恢复走 `offline → online`：
+
+| 距上次见帧 | 状态 |
+|---|---|
+| `≤ missMs` | `online` |
+| `(missMs, 2×missMs]` | `suspect`（**不播报**，只为防抖） |
+| `> 2×missMs`，或探测失败 | `offline` |
+
+`missMs = max(1000, heartbeatMs) × heartbeat_frame_miss_factor`（默认 ×3）。
+
+- **滞回是必需的**：一条恰好卡在阈值上的抖动链路，会在「正常/故障」之间反复横跳，
+  每次横跳都是一条群消息。
+- **`suspect` 就是那条滞回带**，不是给用户看的状态。
+- **从未见过帧的对话（`last_frame_at = 0`）永不判离线**：新建档本身就是「刚见过」，
+  0 只可能出现在从持久化里恢复出的残缺记录上，把它当故障等于开机即误报。
+- **首次建档按在线**：否则「先开 AstrBot 后开 DSH」会把状态机变成一次性熔断。
+
+### 17.3 用**任何帧**刷新，而不是只认心跳帧
+
+`heartbeat` 帧只是下行帧的一种。IM 侧刷新 `last_frame_at` 的点是**所有**
+下行帧的到达处（`_consume_turn` 的入口），理由是：
+
+1. 中间设备/代理可能**只吞某一类帧**，只有「完全没有任何帧」才说明链路死了；
+2. 长 turn 期间服务端本来就不发心跳（文本增量在流里），只认心跳帧会在每个长任务上误报；
+3. 实现上只有一处钩子，不会出现「新加了帧类型但忘了刷新」。
+
+阈值两侧**必须同源**：IM 侧用 `/health` 回传的 `heartbeatMs`，而不是自己在配置里另写一个。
+自写一个只会得到「服务端改成 30 秒、IM 还在按 15 秒判」这种只有用户能发现的偏差。
+
+### 17.4 播报策略（IM 侧）
+
+`heartbeat_notify`：`off`（默认，只写日志）/ `fixed`（掉线与恢复都播报）/
+`offline-only`（只播掉线）。另有 `heartbeat_notify_targets`（UMO 白名单，
+空 = 已知的全部对话）与 `heartbeat_notify_min_gap_ms`（默认 600000，
+防抖动刷屏；**首次掉线不受它限制**）。
+
+- 文案是**固定的**，含原因（`_bridge_error`）与已持续时长；不足一分钟不显示时长。
+- **文案里不许出现 Markdown 粗体**（`**`）：IM 端不渲染 Markdown，星号会原样露给
+  用户。v0.8.4 已经踩过一次（见 CHANGELOG）。
+- **`agent` 模式未接线**：由模型决定说不说、说什么，需要先核实 AstrBot 的 LLM
+  调用入口，本版**不接受「大概是」**。该值若被手工写进配置，加载期 `warn` 一次并
+  退化为固定文案——不假装它已生效。因此它**不在** `_conf_schema.json` 的选项里。
+- 播报**只发固定文案的那一条**，不改动会话的活跃时间戳（否则会把「久未活动」
+  判据搅乱，见 §18.4）。
+
+---
+
+## 18. 发件箱与主动消息（v6 新增，B 半）
+
+> 目标：让 DSH 侧的 agent 在**没人跟它说话**时，也可能主动说一句。
+> 出口是 §18.1 的轮询路由，不是一条新的长连接。
+
+### 18.1 `GET /proactive?since=<游标>`
+
+```jsonc
+{
+  "ok": true,
+  "cursor": 7,
+  "items": [
+    { "id": 6, "conversation": "default:GroupMessage:123456", "text": "…", "at": 1758888888888 }
+  ]
+}
+```
+
+- `id` 是**全局自增**游标（跨对话共享一个序号），因此一次调用能跨对话取走。
+- 逐条按 `id` 升序返回，单次上限 `proactivePollMax`（默认 50）。
+- `cursor` = 本次实际返回的最后一条的 `id`；**没有新条目时原样回显请求的 `since`**。
+- **`since` 同时是 ack**：`since > 0` 时服务端据此 prune（丢掉 `id <= since` 的条目）。
+  `since = 0` 表示「首次取件，什么都别删」——所以它**不能**用来表达「我全收到了」。
+- IM 侧的本地静音（`proactive_enabled=false`）**不改变**这条请求：仍然轮询、
+  仍然推进游标、只是不发送。否则恢复开关的一瞬间会把静音期间攒下的全部主动消息
+  一次性补发，比不静音更糟。
+- **游标必须持久化**（IM 侧 KV）。不持久化的话，插件重载后首轮会以 `since=0` 取件，
+  而服务端只在 `since>0` 时才 prune，于是发件箱里剩下的会被**重发一遍**。
+
+### 18.2 为什么不是「常连 SSE / 多路复用」
+
+设计初期想过给主动消息开一条常连下行通道（或把多对话复用进一条流）。放弃的两个理由：
+
+1. **`Last-Event-ID` 在多对话复用下失去意义**。`seq` 是**每对话**的（§4），一条流里
+   混着多个对话的序号后，客户端断线重连时那个「我收到哪儿了」的游标无法表达。
+   要么退化成全局环形缓冲（那就放弃了重放），要么为每条流维护一张表（复杂度爆炸）。
+2. **主动消息必须可重放，且丢了就是丢了**。SSE 是瞬时的：没人在听时事件永久消失。
+   而主动消息恰恰是「用户当时可能不在」的场景——它天生需要**存储转发**语义。
+
+有界发件箱 + 轮询同时满足：天然可重放、无常连要保活、且不违反 §0 的**单向连接**
+原则（仍然是 IM 侧发起）。代价是延迟上限 = `proactive_poll_ms`（默认 5 秒），
+这对「过一会儿主动说一句」完全够用。
+
+### 18.3 发件箱是有界的，且丢最旧
+
+每对话容量 `proactiveOutboxSize`（默认 20），满时**丢最旧的**并 `warn` 一条。
+理由是价值随时间衰减：一条两小时前的「我想到一件事」发出去只会让人困惑，
+不如丢掉。**这条丢包是设计的一部分，不是缺陷**——所以 IM 侧的游标只前进不后退，
+不会因为服务端丢弃旧条目而回退重取。
+
+### 18.4 DSH 侧闸门（**顺序即优先级**）
+
+扫描周期 `proactiveHeartbeatMs`（默认 **0 = 关闭**，最小夹取 1000ms）。
+每轮对每个对话逐条判定，**返回第一个不通过的原因**（便于排查「它为什么不说话」）：
+
+| # | 闸门 | 含义 |
+|---|---|---|
+| 1 | `disabled` | `proactiveHeartbeatMs <= 0` |
+| 2 | `no-session` | 该对话没有绑定会话（`state.json` 无映射）或没有 live agent |
+| 3 | `offline` | **IM 侧最近没在轮询**（见 §18.5） |
+| 4 | `busy` | 有投递在途、`attaching`、或 `stuckAt > 0`（闸门放了但 turn 未必闭合） |
+| 5 | `pending` | 还有待答的审批或问答：此刻插一轮会把两条等待链搅在一起 |
+| 6 | `too-soon` | 静默时长 < `proactiveMinIdleMs`（默认 30 分钟） |
+| 7 | `outside-window` | 不在 `proactiveWindow`（`["09:00","23:00"]`，空 = 不限，支持跨零点，边界闭区间） |
+| 8 | `quota-exceeded` | 当日已用 `usedToday >= proactiveMaxPerDay`（默认 4，0 = 不限） |
+
+三条实现约定，写错就废：
+
+1. **`offline` 排在 `busy` 之前**：离线时既发不出去也没人听，如实报告这个更根本的原因。
+2. **配额在「发起」时递增，不在「入发件箱」时**：这一轮无论最终说不说，
+   LLM 的钱都已经花了；按「说了才计数」会让沉默的心跳无限烧钱。
+3. **用独立的 `proactiveLastAt`，不碰 `records.lastActiveAt`**：后者是空闲回收与
+   跨日轮转的判据（§2.2/§2.3），被心跳搅动会让「久未活动」永远判不出来。
+
+### 18.5 `online` 闸门的口径：**IM 在轮询**，不是 IM 的每对话在线态
+
+`online` 取的是「最近一次收到 `/proactive` 请求的时刻」在 `proactiveImAliveMs`
+（默认 180000）以内。理由：
+
+- IM 侧还在轮询 ⇒ 它活着，且有人在取件；
+- 它没在轮询时发起心跳 = **白烧一次 LLM 调用，而且回复没人取**；
+- 不需要在 DSH 侧同步 IM 的每对话在线态（§17 的状态机纯在 IM 侧），
+  两半因此**可以分别上线**：只有 A 时 B 不发，只有 B 时 A 不报。
+
+### 18.6 这一轮的输出**不进正常下行通道**
+
+心跳发起的那一轮里，`push()` 有一个总闸门：
+**`proactiveTurn` 非空时一律不发**（审批与问答的推送显式带 `visibleDuringProactive: true`
+放行——那是用户必须看到的东西）。理由是心跳的输出要经过 §18.7 的哨兵筛选后才决定
+说不说，如果它同时走了正常下行，`[SILENT]` 就会以文本增量的形式先漏出去。
+
+### 18.7 沉默哨兵
+
+`proactiveSilentSentinel`（默认 `[SILENT]`）。判定是**整条等于哨兵**（去首尾空白）
+或整条为空——**不做子串匹配**，否则「我本想说 `[SILENT]` 这个词」这种正常回复也会被吞掉。
+抑制放在 **DSH 侧、出门之前**（`finishProactiveTurn`），这样哨兵可能泄漏的路径只剩
+这一条判据要守。
+
+### 18.8 【未实测】本版最重要的一个待验证项
+
+`bridge.agent.followup(createUserMessage({ source: { kind: 'plugin', … } }))`
+是否能真正**起一轮 turn**（而不是被宿主的来源过滤挡掉或被合并进别的轮），
+在本机**未实测**（需要活的 DSH 宿主）。若它不起作用，B 半会表现为
+「日志说发起了、但永远没有回复」，A 半不受影响。
+`source` 必须标 `kind: 'plugin'` 的取值依据是 `dsh-llm` 的 `MessageSourceMap`/
+`ContextFormed`；标成用户来源会让模型以为用户刚开口——这是错的，不是保守。

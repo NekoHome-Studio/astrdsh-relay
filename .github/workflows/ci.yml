@@ -23,6 +23,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # 只有 aiohttp 需要装：它是 AstrBot 侧插件**声明的 PyPI 依赖**，不是宿主 API。
+      # 其余 Python 闸门（location_text / allowlist / heartbeat_state）都是零依赖纯函数，
+      # 而 test-im-heartbeat.py 要 import 生产模块 main.py，因此必须有它。
+      # 刻意不装 astrbot 本身——那是宿主，靠桩（与本仓库既有做法一致）。
+      - name: 安装 AstrBot 侧声明依赖
+        run: pip install -r astrbot_plugin_dsh_relay/requirements.txt
+
       # 全部门禁一次跑完：语法（遍历 lib 下全部 JS）/契约一致性/两侧定位单测/版本一致性。
       # 刻意不在 workflow 里再抄一份分区命令——CI 与本地 `npm test` 必须是同一条，
       # 否则「本地全绿、CI 只跑了其中一半」的漂移迟早发生，而那正是本次要修的问题。
