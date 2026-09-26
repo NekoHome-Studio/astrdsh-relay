@@ -404,6 +404,14 @@ function notes(version, tag, sums, artifacts) {
 > 已改为 \`await\`，并加了从两侧钉住形状的测试。**本版 \`BRIDGE_VERSION\` 仍是 \`6\`，
 > 只动 IM 侧，两侧可以不同时升级。**
 >
+> **v0.8.9 修复**：\`reply_render_mode=card\` 此前**只对 agent 回复生效**，
+> 而心跳播报与主动消息固定发纯文本——把渲染模式改成 \`card\` 的用户会发现这两类消息
+> 仍是一张张纯文本，即**配置键在一条路径上说了谎**。现在对所有出站消息一视同仁，
+> 共用同一条「任一片渲染失败就整条退回纯文本」的判定（绝不半图半文）。
+> 图片链的构造与 \`event.image_result\` 逐字对应（http → \`Image.fromURL\`、
+> 否则 \`Image.fromFileSystem\`，见 \`message_event_result.py:93-116\`）。
+> **本版 \`BRIDGE_VERSION\` 仍是 \`6\`**，只动 IM 侧，两侧可以不同时升级。
+>
 > **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 

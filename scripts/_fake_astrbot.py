@@ -101,6 +101,27 @@ class PlainStub:
         self.text = text
 
 
+class ImageStub:
+    """与真实 ``Image`` 同形：``file`` 字段 + 两个 classmethod。
+
+    ``fromURL`` 对非 http 输入**抛异常**——真实实现就是这么写的
+    （``components.py`` 的 ``Image.fromURL``），照抄才能测出分派写错。
+    """
+
+    def __init__(self, file: str = "") -> None:
+        self.file = file
+
+    @staticmethod
+    def fromURL(url: str) -> "ImageStub":
+        if not str(url).startswith(("http://", "https://")):
+            raise Exception("not a valid url")
+        return ImageStub(file=str(url))
+
+    @staticmethod
+    def fromFileSystem(path) -> "ImageStub":
+        return ImageStub(file=str(path))
+
+
 class AstrMessageEventStub:
     """只在类型注解里出现（文件有 `from __future__ import annotations`，不会求值）。"""
 
@@ -110,19 +131,39 @@ class AstrBotConfigStub(dict):
 
 
 class ContextStub:
-    """假 Context：记录 ``send_message``，并提供可注入的 LLM provider。"""
+    """假 Context：记录 ``send_message``，并提供可注入的 LLM provider。
+
+    记录分两类：文本与图片。``sent`` 只返回**纯文本**那部分，这样既有的
+    「按纯文本断言」的用例不会被图片消息污染；图片走 ``images``。
+    """
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
+        #: (kind, umo, payload)，kind ∈ {"text", "image"}
+        self.messages: list[tuple[str, str, str]] = []
         self.send_should_fail = False
         #: 由测试注入：``get_using_provider(umo)`` 的返回值。
         self.provider: object | None = None
         self.provider_error: Exception | None = None
         self.provider_calls: list[str] = []
 
+    @property
+    def sent(self) -> list[tuple[str, str]]:
+        return [(umo, payload) for kind, umo, payload in self.messages if kind == "text"]
+
+    @property
+    def images(self) -> list[tuple[str, str]]:
+        return [(umo, payload) for kind, umo, payload in self.messages if kind == "image"]
+
     async def send_message(self, umo: str, chain) -> bool:
-        text = "".join(str(getattr(part, "text", "") or "") for part in getattr(chain, "chain", []))
-        self.sent.append((umo, text))
+        parts = list(getattr(chain, "chain", []))
+        for part in parts:
+            if isinstance(part, ImageStub):
+                self.messages.append(("image", umo, str(getattr(part, "file", "") or "")))
+        text = "".join(
+            str(getattr(part, "text", "") or "") for part in parts if isinstance(part, PlainStub)
+        )
+        if text:
+            self.messages.append(("text", umo, text))
         return not self.send_should_fail
 
     def get_using_provider(self, umo: str | None = None):
@@ -164,6 +205,7 @@ def _install_stubs() -> None:
     event.filter = FilterStub()
     event.MessageChain = MessageChainStub
     components.Plain = PlainStub
+    components.Image = ImageStub
     star.Context = ContextStub
     star.Star = StarStub
 

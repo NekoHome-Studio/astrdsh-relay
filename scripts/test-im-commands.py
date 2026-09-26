@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import sys
 from pathlib import Path
@@ -479,6 +480,97 @@ def _() -> None:
     assert event.all_text, "必须整条退回纯文本"
     assert "".join(event.all_text) == "一二三四五六七八九十", event.all_text
     assert LOGGER.has("warn", "整条降级纯文本")
+
+
+section("主动推送也认 reply_render_mode（配置键不能在一条路径上说谎）")
+
+
+@test("card 模式：心跳播报以**图片**发出，而不是固定纯文本")
+def _() -> None:
+    m, c, _t = make_main(heartbeat_notify="fixed", reply_render_mode="card")
+    m._touch_frame(UMO)
+    m._bridge_ok = False
+    m._bridge_error = "HTTP 503"
+
+    async def fake_t2i(text, return_url=True):
+        return f"http://img/{len(text)}"
+
+    m.text_to_image = fake_t2i
+    asyncio.run(m._evaluate_heartbeats())
+    assert c.images, f"card 模式下应走图片：{c.messages}"
+    assert c.sent == [], f"不该同时再发一份纯文本：{c.sent}"
+
+
+@test("card 模式 + 任一片失败 ⇒ 主动推送**整条**退回纯文本（绝不半图半文）")
+def _() -> None:
+    # chunk_size=5 会把整条通知切成多片，专门盯「一片失败就全退」这条规则。
+    m, c, _t = make_main(heartbeat_notify="fixed", reply_render_mode="card", chunk_size=5)
+
+    async def flaky_t2i(text, return_url=True):
+        raise RuntimeError("t2i 超时")
+
+    m.text_to_image = flaky_t2i
+    m._touch_frame(UMO)
+    m._bridge_ok = False
+    m._bridge_error = "HTTP 503"
+    asyncio.run(m._evaluate_heartbeats())
+    assert not c.images, f"不该有半截图片：{c.messages}"
+    assert c.sent and "中断" in "".join(text for _umo, text in c.sent), c.sent
+
+
+@test("默认 text 模式不受影响：推送仍是纯文本、不碰 t2i")
+def _() -> None:
+    m, c, _t = make_main(heartbeat_notify="fixed")
+
+    async def boom(text, return_url=True):
+        raise AssertionError("text 模式下不该调用 t2i")
+
+    m.text_to_image = boom
+    m._touch_frame(UMO)
+    m._bridge_ok = False
+    m._bridge_error = "HTTP 503"
+    asyncio.run(m._evaluate_heartbeats())
+    assert c.sent and "中断" in c.sent[-1][1], c.sent
+    assert c.images == [], c.messages
+
+
+@test("主动消息（取件）在 card 模式下同样出图")
+def _() -> None:
+    m, c, t = make_main(reply_render_mode="card")
+    t.proactive_items = [{"id": 1, "conversation": UMO, "text": "我想到一件事", "at": 0}]
+    t.proactive_cursor = 1
+
+    async def fake_t2i(text, return_url=True):
+        return f"http://img/{len(text)}"
+
+    m.text_to_image = fake_t2i
+    asyncio.run(m._poll_proactive())
+    assert c.images and c.images[0][0] == UMO, c.messages
+    assert c.sent == [], c.sent
+
+
+@test("_image_chain 的分派与 event.image_result 逐字对应（http→fromURL，其余→fromFileSystem）")
+def _() -> None:
+    from _fake_astrbot import ImageStub
+
+    http_chain = plugin_main._image_chain("http://x/y.png")
+    assert isinstance(http_chain.chain[0], ImageStub), http_chain.chain[0]
+    assert http_chain.chain[0].file == "http://x/y.png", http_chain.chain[0].file
+
+    local_chain = plugin_main._image_chain("C:/tmp/a.png")
+    assert local_chain.chain[0].file == "C:/tmp/a.png", local_chain.chain[0].file
+
+
+@test("_image_chain 走的是 fromURL（它会对非 http 抛错），所以分派写错不会安静通过")
+def _() -> None:
+    from _fake_astrbot import ImageStub
+
+    try:
+        ImageStub.fromURL("C:/tmp/a.png")
+    except Exception as exc:
+        assert "not a valid url" in str(exc), exc
+    else:
+        raise AssertionError("桩的 fromURL 没有照抄真实实现的校验")
 
 
 summary()

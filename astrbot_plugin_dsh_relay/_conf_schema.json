@@ -103,11 +103,11 @@
     "hint": "aiocqhttp 适配器没有任何长度切分逻辑，必须在此切分；走 yield 时纯文本超过 forward_threshold(本机 1500) 会被自动包成合并转发"
   },
   "reply_render_mode": {
-    "description": "回复呈现方式",
+    "description": "呈现方式（回复与主动推送共用）",
     "type": "string",
     "default": "text",
     "options": ["text", "card"],
-    "hint": "text=纯文本并对 Markdown 做最小降级；card=交给 AstrBot t2i 渲染成图片卡"
+    "hint": "text=纯文本并对 Markdown 做最小降级；card=交给 AstrBot t2i 渲染成图片卡。对**所有**出站消息生效：agent 回复、心跳播报、主动消息。任一片渲染失败就整条退回纯文本（绝不半图半文）"
   },
   "approval_enabled": {
     "description": "转发敏感操作审批请求",

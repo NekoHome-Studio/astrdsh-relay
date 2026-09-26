@@ -1825,8 +1825,21 @@ class Main(Star):
         「要么全成，要么交还给 ``_reply`` 走纯文本」——
         半截图片 + 半截文字会比纯文本更糟糕。
         """
+        urls = await self._card_urls(chunks)
+        if urls is None:
+            return None
+        return [event.image_result(url) for url in urls]
+
+    async def _card_urls(self, chunks: list[str]) -> list[str] | None:
+        """把每一片渲染成图片 URL；**有一片失败就整条放弃**（返回 None）。
+
+        抽出来是为了让**回复**（``_render_cards``，走 ``event.image_result``）与
+        **主动推送**（``push_to_session``，走 ``context.send_message``）共用同一条
+        「要么全成、要么整条退回纯文本」的判定。两处各写一份的话，
+        「半图半文」这种最难查的形态迟早会在其中一条路径上出现。
+        """
         total = len(chunks)
-        cards: list[Any] = []
+        urls: list[str] = []
         for index, chunk in enumerate(chunks, 1):
             try:
                 url = await self.text_to_image(chunk, return_url=True)
@@ -1840,8 +1853,8 @@ class Main(Star):
                     f"[dsh_relay] card 渲染返回空 URL（第 {index}/{total} 片）；整条降级纯文本"
                 )
                 return None
-            cards.append(event.image_result(url))
-        return cards
+            urls.append(str(url))
+        return urls
 
     # ---- 辅助 --------------------------------------------------------
 
@@ -2145,12 +2158,37 @@ class Main(Star):
 
         返回值即 ``Context.send_message`` 的布尔：``False`` 表示按
         ``platform.meta().id`` 没匹配到平台，消息其实**没发出去**。
+
+        ⚠️ **``reply_render_mode=card`` 在这里同样生效**（v0.8.9 修）。此前只有
+        ``_reply`` 认这个键，于是把渲染模式改成 ``card`` 的用户会发现
+        **心跳播报与主动消息仍是纯文本**——配置键在一条路径上说了谎，
+        而 R1 那一批改动（``docs/ROADMAP-v0.7.md`` §1）要消灭的就是这种形状。
+        判定与回退规则与回复**完全一致**：任一片渲染失败就整条退回纯文本
+        （共用 ``_card_urls``，绝不出现半图半文）。
+
+        图片链的构造与 ``event.image_result`` 逐字对应：
+        ``MessageEventResult.url_image`` 是 ``Image.fromURL``，
+        ``file_image`` 是 ``Image.fromFileSystem``（``message_event_result.py:93-116``），
+        这里按同样规则分派。
         """
         from astrbot.api.event import MessageChain
         from astrbot.api.message_components import Plain
 
         chunk_size = int(self._cfg("chunk_size", 800) or 0)
         chunks = _split_for_im(text, chunk_size) or [text]
+
+        if str(self._cfg("reply_render_mode", "text") or "text").strip().lower() == "card":
+            urls = await self._card_urls(chunks)
+            if urls is not None:
+                sent = True
+                for url in urls:
+                    try:
+                        sent = await self.context.send_message(umo, _image_chain(url)) and sent
+                    except Exception as exc:  # noqa: BLE001 - 推送失败不得影响调用方
+                        logger.warning(f"[dsh_relay] 主动推送（图片）失败：{exc}")
+                        return False
+                return sent
+
         sent = True
         for chunk in chunks:
             chain = MessageChain(chain=[Plain(text=chunk)])
@@ -2196,6 +2234,35 @@ class Main(Star):
 # ──────────────────────────────────────────────────────────────────────
 # 纯函数
 # ──────────────────────────────────────────────────────────────────────
+
+def _image_chain(url: str) -> Any:
+    """把图片 URL/路径包成一条可直接 ``context.send_message`` 的消息链。
+
+    与 ``AstrMessageEvent.image_result`` **逐字对应**（已核实）：
+
+      * ``MessageEventResult.url_image(url)`` → ``Image.fromURL(url)``
+      * ``MessageEventResult.file_image(path)`` → ``Image.fromFileSystem(path)``
+      * 分派判据就是「开头是不是 ``http``」（``astr_message_event.py`` 的
+        ``image_result`` 原文）
+
+    做成模块级纯函数是为了让假宿主能单独测它：``Image.fromURL`` 对非 http 输入
+    **会抛异常**，所以分派规则写错会在推送时炸，而不是安静地发错东西。
+    """
+    from astrbot.api.event import MessageChain
+    from astrbot.api.message_components import Image
+
+    # 先探测能力（真实组件有这两个 classmethod；桩也照抄），再分派。
+    maker = getattr(Image, "fromURL", None)
+    file_maker = getattr(Image, "fromFileSystem", None)
+    text = str(url)
+    if text.startswith("http") and callable(maker):
+        component = maker(text)
+    elif callable(file_maker):
+        component = file_maker(text)
+    else:  # 宿主版本没有这两个 classmethod 时退回构造参数（file 是真实字段名）
+        component = Image(file=text)
+    return MessageChain(chain=[component])
+
 
 def _now_ms() -> int:
     """当前毫秒时间戳。心跳的帧间隔判定统一用它，避免各处各写一遍 ``time.time() * 1000``。"""
