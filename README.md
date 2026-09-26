@@ -14,7 +14,7 @@
 > 契约预留的三项配置也已接线（`hmacMode` / `policy` 的 `on-demand`·`daily` 轮转 /
 > `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。
 > v0.8.7 起另有**心跳**：IM 侧的连通性播报（A，固定文案或由对话模型组织措辞）与
-> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.9.0`。
+> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.9.1`。
 
 ## 交付物地图
 
@@ -32,6 +32,7 @@
 | `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十二个方法全部实现）。 |
 | `docs/RELEASING.md` | 发版流程：统一版本规则、tag 约定、产物形态与原因、CI 检查项。 |
 | `docs/DEPLOY-CHECKLIST.md` | **部署与验证清单**：装包 → 逐条验证（数据面 / 心跳 A / 自主心跳 B / 审批 / 问答 / 呈现 / 跨机反代）→ 记录表 → 回滚。三处「未实测」的关闭凭据就是它的 §11。 |
+| `docs/WEBUI.md` | **Web 面板**：长在 DSH Web 里（设置 → 星驿）。显示什么、不做什么、怎么开、安全模型（**不是认证**）、已知边界。 |
 | `scripts/package-release.mjs` | 打包脚本：校验 tag 与两侧版本 → 产出 tgz + zip + SHA256SUMS + 发布说明。 |
 | `scripts/check-contract-parity.mjs` | 两侧契约常量一致性闸门（事件类型 / 错误码 / 路由 / 版本）。 |
 | `scripts/verify-bridge-live.py` | **重启后的一键验收**（`npm run verify:bridge`）：路由挂没挂、`bridgeVersion`、鉴权是否 fail-closed、`state.json` 是否已生成。需要活的桥，**不进 `npm test`**。 |

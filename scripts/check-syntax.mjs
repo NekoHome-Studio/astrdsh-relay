@@ -16,7 +16,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const DIRS = ['dsh-astrbot-relay', 'dsh-astrbot-relay/lib', 'scripts']
+// 客户端半边（client/）也要在这里出现：它不走 node 的模块解析，
+// 语法错了只会在浏览器里变成一个安静的白屏——那是最难查的一类失败。
+const DIRS = ['dsh-astrbot-relay', 'dsh-astrbot-relay/lib', 'dsh-astrbot-relay/client', 'scripts']
 const EXTS = ['.js', '.mjs']
 
 const files = []

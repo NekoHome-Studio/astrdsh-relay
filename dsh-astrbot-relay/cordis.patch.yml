@@ -31,3 +31,8 @@
         approvalTimeoutMs: 120000   # 审批服务自身零超时，这里必须给值
         # ---- 输出 ----
         forwardReasoning: false
+        # ---- WebUI 面板（见 docs/WEBUI.md）----
+        # 面板是一个**未认证**的只读快照口：默认关；开启后也只允许回环访问。
+        # 跨机要用，请在反向代理上加认证，或在明确知道暴露面之后再开 panelAllowRemote。
+        panelEnabled: false
+        panelAllowRemote: false

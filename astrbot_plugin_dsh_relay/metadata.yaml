@@ -8,7 +8,7 @@ desc: >-
   当前定位：只做「消息桥接（数据面）」。会话/模型/Preset/Settings 的管理面**尚未**接管，
   过渡期仍由 astrbot_plugin_dsh_connector 负责——但本插件的目标是**最终替代**它
   （功能对齐后接管，见 docs/DESIGN.md §7），不是长期并存。
-version: 0.9.0
+version: 0.9.1
 author: 綾地 寧々&Fangnai-byte
 repo: "https://github.com/NekoHome-Studio/astrdsh-relay"
 astrbot_version: ">=4.16,<5"

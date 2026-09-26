@@ -44,6 +44,7 @@ import {
   APPROVAL_CODE_LENGTH, APPROVAL_OUTCOME, APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
 } from './contract.js'
 import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
+import { PANEL_ROUTE, buildPanelSnapshot, panelAccessDecision } from './panel.js'
 import { normalizeAnswers, questionError, renderQuestion } from './questions.js'
 import {
   PROACTIVE_SKIP, enqueueBounded, evaluateProactiveGates, isSilentReply,
@@ -150,6 +151,16 @@ export const Config = Schema.object({
   proactivePollMax: Schema.number().default(50),
   /** IM 侧多久没轮询就算「没人在听」（毫秒） */
   proactiveImAliveMs: Schema.number().default(180_000),
+
+  // ---- WebUI 面板（见 docs/WEBUI.md）----
+  /**
+   * 是否对外提供面板只读快照 `/panel/status`。**默认关**：
+   * 它未经认证，只是「同源 + 默认只允许回环」的读取口。
+   * 开着它等于让 DSH 端口上的任何本机进程都能读到「有哪些 IM 对话、目录在哪」。
+   */
+  panelEnabled: Schema.boolean().default(false),
+  /** 允许非回环 Host 读快照（跨机部署时，请在反代上加认证） */
+  panelAllowRemote: Schema.boolean().default(false),
 })
 
 /**
@@ -524,6 +535,10 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.REBIND), handler: handleRebind },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.FORK), handler: handleFork },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.ADOPT), handler: handleAdopt },
+      // WebUI 面板的只读快照。**刻意用 PANEL_ROUTE 而不是 ROUTES 里的键**：
+      // 那张表是 IM↔DSH 协议（要与 contract.py 逐字对齐、进版本协商），
+      // 而面板只是 DSH 本机的诊断面，IM 永远不会调它。
+      { kind: 'exact', path: join(config.pathPrefix, PANEL_ROUTE), handler: handlePanelStatus },
     ]
 
     ctx.effect(() => {
@@ -1133,6 +1148,8 @@ export function apply(ctx, config) {
      * IM 侧还在轮询就说明它活着，而它没在轮询时发心跳只会白烧一次 LLM 调用。
      */
     let lastProactivePollAt = 0
+    /** 累计轮询次数。面板用它区分「IM 在稳定地听」与「只来过一次就没了」。 */
+    let proactivePollCount = 0
 
     /** 心跳轮到站：沉默就丢掉，否则入发件箱。 */
     function finishProactiveTurn(bridge) {
@@ -1226,6 +1243,7 @@ export function apply(ctx, config) {
     function handleProactive(request, response) {
       if (!authorize(request, response, config)) return
       lastProactivePollAt = Date.now()
+      proactivePollCount += 1
       const raw = Number(queryOf(request).searchParams.get('since') ?? 0)
       const since = Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 0
       const items = []
@@ -1750,6 +1768,79 @@ export function apply(ctx, config) {
         return
       }
       writeJson(response, 200, locationFor(conversation))
+    }
+
+    /**
+     * GET /panel/status — **WebUI 面板的只读快照**（`docs/WEBUI.md`）。
+     *
+     * 三条刻意的边界，写在这里免得后来人「顺手」放开：
+     *
+     *   1. **只读。** 改指/认领这些写操作留给 IM 指令与将来的 P5 控制面——
+     *      那里的权限门是硬要求（`docs/DESIGN.md` §7.3.1：「不做就是提权漏洞」）。
+     *      面板要是能改状态，就等于绕开那道还没建的门。
+     *   2. **不是认证。** `panelAccessDecision` 只挡跨站读取与非回环访问，
+     *      不证明调用者是谁；默认关（`panelEnabled: false`），且默认只允许回环。
+     *   3. **与 IM 协议无关。** 路由用 `PANEL_ROUTE` 而不是 `ROUTES` 里的键，
+     *      因此它不进契约常量表、不参与 `bridgeVersion` 协商。
+     */
+    function handlePanelStatus(request, response) {
+      const decision = panelAccessDecision({
+        enabled: config.panelEnabled === true,
+        hostHeader: request?.headers?.host,
+        secFetchSite: request?.headers?.['sec-fetch-site'],
+        originHeader: request?.headers?.origin,
+        allowRemote: config.panelAllowRemote === true,
+      })
+      if (!decision.ok) {
+        // 直接用 writeJson 而不是 writeError：后者的状态码由 ERROR_CODE 映射决定，
+        // 而这里需要精确的 404（未启用，不宣告存在）与 403（跨站 / 非回环）。
+        writeJson(response, decision.status, {
+          error: { code: decision.status === 404 ? 'not_found' : 'panel_denied', message: `panel/${decision.reason}` },
+        })
+        return
+      }
+      writeJson(response, 200, panelSnapshot())
+    }
+
+    /** 把宿主侧的活状态压成面板快照。入参全是普通值，纯函数在 lib/panel.js 里。 */
+    function panelSnapshot() {
+      const conversations = []
+      for (const [conversation, record] of records) {
+        const location = locationFor(conversation)
+        const bridge = bridges.get(conversation)
+        conversations.push({
+          conversation,
+          title: location.title,
+          dshSessionId: record?.dshSessionId ?? null,
+          cwd: location.cwd ?? null,
+          // 与契约 §12.3 同一口径：对话级覆盖 vs 跟随全局，面板上要看得出来
+          cwdSource: location.source,
+          lastActiveAt: Number(record?.lastActiveAt) || 0,
+          seq: Number(record?.seq) || 0,
+          outbox: Array.isArray(bridge?.outbox) ? bridge.outbox : [],
+          proactiveTurn: Boolean(bridge?.proactiveTurn),
+          live: Boolean(bridge?.agent),
+        })
+      }
+      conversations.sort((a, b) => b.lastActiveAt - a.lastActiveAt)
+      return buildPanelSnapshot({
+        bridgeVersion: BRIDGE_VERSION,
+        uptimeMs: Math.round(process.uptime() * 1000),
+        pathPrefix: config.pathPrefix,
+        policy: config.policy,
+        cwd: config.cwd,
+        statePath,
+        stateExisted,
+        heartbeatMs: Math.max(1000, Math.trunc(config.heartbeatMs)),
+        sessionTitleTemplate: config.sessionTitleTemplate,
+        conversations,
+        pending: pendingSummary(),
+        im: {
+          lastPollAt: lastProactivePollAt,
+          imAliveMs: config.proactiveImAliveMs,
+          pollCount: proactivePollCount,
+        },
+      })
     }
 
     /**

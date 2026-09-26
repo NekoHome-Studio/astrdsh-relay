@@ -1,5 +1,43 @@
 # 更新日志
 
+## v0.9.1 — 2026-09-26
+
+> **WebUI 面板（第一版）**：星驿现在有了自己的 Web 界面，长在 DSH Web 里
+> （设置 → 星驿）。**`bridgeVersion` 仍是 `6`** —— 面板路由刻意不进契约常量表，
+> 详见下面「变更」第一条。
+
+### 新增
+
+- **Web 面板**（`dsh-astrbot-relay/client/client.js` + `lib/panel.js`）：
+  一张对话映射表，把「哪个 IM 对话 ↔ 哪条 DSH 会话 ↔ 标题 ↔ 最终生效的工作目录」
+  摆在一起，外加契约版本 / 运行时长 / **IM 是否在听** / 在途投递。
+  其中「IM 是否在听」正是自主心跳 `online` 闸门取的那个判据（契约 §18.5）——
+  它在面板上变红，就等于「此刻发起心跳会白烧一次调用且回复没人取」。
+- 两个配置项：`panelEnabled`（默认 **false**）、`panelAllowRemote`（默认 false）。
+- 三层验收：`npm run test:panel`（纯逻辑 25 项）、`npm run test:panel-chain`
+  （假宿主真跑路由与访问判定 13 项）、以及真机 `curl`（`docs/WEBUI.md` §5）。
+- 文档 `docs/WEBUI.md`：显示什么、**不**做什么、怎么开、安全模型、已知边界。
+
+### 变更
+
+- **面板路由不进 `contract.js` 的 `ROUTES`**，而用独立的 `PANEL_ROUTE`。
+  那张表是 IM↔DSH 协议，进去就要镜像到 `contract.py` 并升 `bridgeVersion`；
+  而面板只是 DSH 本机的 UI 面，IM 永远不会调它。混进去等于用一个协议版本号
+  去记录一件与协议无关的事。**契约闸门仍报 12 路由 / `BRIDGE_VERSION=6`**，
+  这就是这条设计的证据。
+- **面板是只读的，而且刻意不是认证。** `panelAccessDecision` 只做三件事：
+  未启用回 **404**（不是 403——403 等于宣告这里有东西）、挡 `Sec-Fetch-Site:
+  cross-site`、非回环 Host 一律拒（除非显式开 `panelAllowRemote`），
+  另加 `Origin`/`Host` 同源检查防 DNS rebinding。
+  **同一台机器上的任何进程都能读**这份快照——它和 DSH 自己的端口同级。
+  跨机暴露请用反代加认证，本模块不假装解决了那个问题。
+  写操作（改指/认领）**不**放进面板：那道权限门还没建（`docs/DESIGN.md` §7.3.1）。
+- 快照里**不含 token、不含消息正文**，只有对话键、会话 id、标题、目录与计数；
+  `scripts/test-panel-chain.mjs` 有一条用例专门钉这件事（面板不是后门）。
+- `scripts/check-syntax.mjs` 的目录列表补上 `dsh-astrbot-relay/client`——
+  它原来不递归，客户端半边会被整片漏检，而语法错了在浏览器里只是安静的白屏。
+  `scripts/package-release.mjs` 的必需文件清单同样补上 `client/client.js`。
+
 ## v0.9.0 — 2026-09-26
 
 > **首个稳定版**：`0.9.0-alpha` 是它的预发布；本版内容 = alpha + 下面「新增」里的验证工具，
