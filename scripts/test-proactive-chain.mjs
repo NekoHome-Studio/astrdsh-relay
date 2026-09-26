@@ -17,71 +17,18 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { join } from 'node:path'
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const PLUGIN = join(ROOT, 'dsh-astrbot-relay')
+import { PLUGIN_DIR, ROOT, loadHermeticPlugin, materializeDefaults } from './_fake-host.mjs'
+
 const TMP = join(ROOT, '.test-tmp', 'proactive-chain')
 const PREFIX = '/astrbot-relay'
 const CONV = 'default:GroupMessage:1000000001'
 
-const STUBS = {
-  schemastery: `const chain = () => {
-  const node = { value: undefined, required: false }
-  const api = {
-    default(v) { node.value = v; return api },
-    required() { node.required = true; return api },
-    description() { return api },
-    __node: node,
-  }
-  return api
-}
-const object = (shape) => ({ __shape: shape })
-export default { object, string: chain, number: chain, boolean: chain, union: chain, array: chain }
-`,
-  'dsh-brand': `export const brandString = (value) => value\n`,
-  'dsh-agent': `export const installModelSelection = () => {}\n`,
-  'dsh-llm': `export const createUserMessage = (input) => ({ ...input, role: 'user' })\n`,
-}
-
-function ensureStubs() {
-  const created = []
-  for (const [name, source] of Object.entries(STUBS)) {
-    const dir = join(PLUGIN, 'node_modules', '@deepseek-ai', name)
-    if (existsSync(dir)) continue
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({
-      name: `@deepseek-ai/${name}`, version: '0.0.0-test-stub', type: 'module',
-      main: 'index.js', exports: { '.': './index.js' },
-    }, null, 2)}\n`)
-    writeFileSync(join(dir, 'index.js'), source)
-    writeFileSync(join(dir, '__STUB__'), '由 scripts/test-proactive-chain.mjs 创建，可安全删除\n')
-    created.push(dir)
-  }
-  return created
-}
-
-function removeStubs(created) {
-  for (const dir of created) rmSync(dir, { recursive: true, force: true })
-  for (const dir of [join(PLUGIN, 'node_modules', '@deepseek-ai'), join(PLUGIN, 'node_modules')]) {
-    try {
-      if (existsSync(dir) && readdirSync(dir).length === 0) rmSync(dir, { recursive: true, force: true })
-    } catch { /* 清理失败不影响测试结论 */ }
-  }
-}
-
-const createdStubs = ensureStubs()
+// 桩建在插件的**隔离副本**里（scripts/_fake-host.mjs），不碰真实目录。
 rmSync(TMP, { recursive: true, force: true })
 mkdirSync(TMP, { recursive: true })
 
-function materializeDefaults(Config) {
-  const out = {}
-  for (const [key, field] of Object.entries(Config?.__shape ?? {})) {
-    if (field?.__node?.value !== undefined) out[key] = field.__node.value
-  }
-  return out
-}
 
 let harnessSeq = 0
 
@@ -224,7 +171,7 @@ function finishTurn(h, agent, text) {
   listener(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'stop' } } })
 }
 
-const mod = await import(pathToFileURL(join(PLUGIN, 'lib', 'index.js')).href)
+const { mod, cleanup } = await loadHermeticPlugin({ label: 'proactive-chain' })
 
 let passed = 0
 const failures = []
@@ -368,7 +315,7 @@ await test('发件箱有界：超出上限丢最旧的，并 warn', async () => 
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`)
 if (failures.length) console.error(`失败项：${failures.join('、')}`)
 
-removeStubs(createdStubs)
+cleanup()
 rmSync(TMP, { recursive: true, force: true })
 try {
   const parent = join(ROOT, '.test-tmp')

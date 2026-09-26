@@ -17,71 +17,19 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const PLUGIN = join(ROOT, 'dsh-astrbot-relay')
+import { PLUGIN_DIR, ROOT, loadHermeticPlugin, materializeDefaults } from './_fake-host.mjs'
+
 const TMP = join(ROOT, '.test-tmp', 'panel-chain')
 const PREFIX = '/astrbot-relay'
 const CONV = 'default:GroupMessage:1000000001'
 
-const STUBS = {
-  schemastery: `const chain = () => {
-  const node = { value: undefined, required: false }
-  const api = {
-    default(v) { node.value = v; return api },
-    required() { node.required = true; return api },
-    description() { return api },
-    __node: node,
-  }
-  return api
-}
-const object = (shape) => ({ __shape: shape })
-export default { object, string: chain, number: chain, boolean: chain, union: chain, array: chain }
-`,
-  'dsh-brand': `export const brandString = (value) => value\n`,
-  'dsh-agent': `export const installModelSelection = () => {}\n`,
-  'dsh-llm': `export const createUserMessage = (input) => ({ ...input, role: 'user' })\n`,
-}
-
-function ensureStubs() {
-  const created = []
-  for (const [name, source] of Object.entries(STUBS)) {
-    const dir = join(PLUGIN, 'node_modules', '@deepseek-ai', name)
-    if (existsSync(dir)) continue
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({
-      name: `@deepseek-ai/${name}`, version: '0.0.0-test-stub', type: 'module',
-      main: 'index.js', exports: { '.': './index.js' },
-    }, null, 2)}\n`)
-    writeFileSync(join(dir, 'index.js'), source)
-    writeFileSync(join(dir, '__STUB__'), '由 scripts/test-panel-chain.mjs 创建，可安全删除\n')
-    created.push(dir)
-  }
-  return created
-}
-
-function removeStubs(created) {
-  for (const dir of created) rmSync(dir, { recursive: true, force: true })
-  for (const dir of [join(PLUGIN, 'node_modules', '@deepseek-ai'), join(PLUGIN, 'node_modules')]) {
-    try {
-      if (existsSync(dir) && readdirSync(dir).length === 0) rmSync(dir, { recursive: true, force: true })
-    } catch { /* 清理失败不影响结论 */ }
-  }
-}
-
-const createdStubs = ensureStubs()
+// 桩建在插件的**隔离副本**里（scripts/_fake-host.mjs），不碰真实目录。
 rmSync(TMP, { recursive: true, force: true })
 mkdirSync(TMP, { recursive: true })
 
-function materializeDefaults(Config) {
-  const out = {}
-  for (const [key, field] of Object.entries(Config?.__shape ?? {})) {
-    if (field?.__node?.value !== undefined) out[key] = field.__node.value
-  }
-  return out
-}
 
 let seq = 0
 
@@ -160,7 +108,7 @@ function makeResponse() {
   return response
 }
 
-const mod = await import(pathToFileURL(join(PLUGIN, 'lib', 'index.js')).href)
+const { mod, cleanup } = await loadHermeticPlugin({ label: 'panel-chain' })
 
 /** 跑一个 harness：apply() 一次，然后返回它注册好的路由表。 */
 function boot(overrides = {}) {
@@ -197,7 +145,7 @@ console.log('路由与访问判定')
 await test('面板路由已注册，且**不在**契约 ROUTES 表里（不参与版本协商）', async () => {
   const h = boot({ panelEnabled: true })
   assert.ok(h.routes.has(`${PREFIX}/panel/status`))
-  const { ROUTES } = await import(pathToFileURL(join(PLUGIN, 'lib', 'contract.js')).href)
+  const { ROUTES } = await import(pathToFileURL(join(PLUGIN_DIR, 'lib', 'contract.js')).href)
   const values = Object.values(ROUTES)
   assert.ok(!values.includes('/panel/status'), '面板路由不该混进契约常量表')
 })
@@ -311,7 +259,7 @@ await test('快照里不含 token / 密钥（面板是诊断口，不是后门�
   }
 })
 
-removeStubs(createdStubs)
+cleanup()
 
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`)
 if (failures.length) {
