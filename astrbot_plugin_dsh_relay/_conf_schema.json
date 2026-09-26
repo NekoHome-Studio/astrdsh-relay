@@ -120,6 +120,17 @@
     "default": 120000,
     "hint": "应与 DSH 侧 approvalTimeoutMs 一致或略小；超时按拒绝处理（fail closed）"
   },
+  "questions_enabled": {
+    "description": "转发 agent 的提问（user-questions）",
+    "type": "bool",
+    "default": true
+  },
+  "question_timeout_ms": {
+    "description": "提问等待超时（毫秒）",
+    "type": "int",
+    "default": 300000,
+    "hint": "应与 DSH 侧 questionTimeoutMs 一致或略小；超时后 DSH 以 ASK_ABORTED 中止本轮，不会撤掉 turn"
+  },
   "retry_max_attempts": {
     "description": "可重试错误的尝试次数",
     "type": "int",

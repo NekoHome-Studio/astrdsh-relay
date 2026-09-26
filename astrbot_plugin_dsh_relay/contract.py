@@ -43,6 +43,12 @@ ROUTE_REBIND = "/session/rebind"
 ROUTE_FORK = "/session/fork"
 #: 把某对话改指到一个**已存在**的会话 id（契约 §15）。
 ROUTE_ADOPT = "/session/adopt"
+#: 代答宿主的 ``ask_user_question``（契约 §16）。与 ``ROUTE_APPROVAL`` 是两条独立
+#: 通道：审批裁决工具的"要不要做"，这里回答工具的入参。DSH 侧各存一张表
+#: （``approvals`` / ``questions``），IM 侧也各有一套提示——混用一张表会让
+#: "已决议"判据互相误伤。入参 ``conversation`` / ``callId`` / ``answers``；
+#: 已决议或已超时同样归 409 ``agent_busy``，字段无效归 400 ``unsupported``。
+ROUTE_ANSWER = "/answer"
 
 #: 下行事件类型。契约 §4。
 EVENT_TURN_START = "turn/start"
@@ -51,6 +57,12 @@ EVENT_REASONING_DELTA = "reasoning/delta"
 EVENT_TOOL_CALL = "tool/call"
 EVENT_APPROVAL_REQUIRED = "approval/required"
 EVENT_APPROVAL_RESOLVED = "approval/resolved"
+#: 宿主想向用户提问（``ask_user_question``）。契约 §16。
+#: ``questions[]`` 每项只有 ``id`` / ``question`` / ``header`` / ``options`` / ``multiSelect``——
+#: 契约里的 ``detail`` 与 ``intent`` 是给 Web UI 的，桥已剥掉，别在这里再写分支。
+EVENT_QUESTION_REQUIRED = "question/required"
+#: 问答已结算（``im`` / ``abort`` / ``timeout`` / ``retarget``），仅用于清表与提示。
+EVENT_QUESTION_RESOLVED = "question/resolved"
 EVENT_MESSAGE_FINAL = "message/final"
 EVENT_TURN_END = "turn/end"
 EVENT_HEARTBEAT = "heartbeat"
@@ -64,6 +76,8 @@ KNOWN_EVENT_TYPES = frozenset({
     EVENT_TOOL_CALL,
     EVENT_APPROVAL_REQUIRED,
     EVENT_APPROVAL_RESOLVED,
+    EVENT_QUESTION_REQUIRED,
+    EVENT_QUESTION_RESOLVED,
     EVENT_MESSAGE_FINAL,
     EVENT_TURN_END,
     EVENT_HEARTBEAT,
@@ -101,6 +115,11 @@ APPROVAL_COMMAND_REJECT = "reject"
 #: 定位子命令。这是 **AstrBot 侧的 UX 词**，不是线上协议的一部分，
 #: 因此只存在于本文件（DSH 侧那份契约副本里没有对应常量）。
 COMMAND_WHERE = "where"
+
+#: 回答 DSH 提问的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词：
+#: 审批裁决"要不要做"（``ROUTE_APPROVAL``），这里回答"选哪个"
+#: （``ROUTE_ANSWER``，契约 §16）。它在 DSH 侧那份常量表里同样没有对应项。
+COMMAND_ANSWER = "answer"
 
 #: 帮助子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词，不是线上协议的一部分；
 #: 它与「裸前缀」共用同一份清单（`main._usage_text`），因此不存在"文档里有、

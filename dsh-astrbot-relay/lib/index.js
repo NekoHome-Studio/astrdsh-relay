@@ -105,10 +105,19 @@ export const Config = Schema.object({
   maxQueuedPerConversation: Schema.number().default(4),
   idempotencyEntries: Schema.number().default(512),
   idempotencyTtlMs: Schema.number().default(600_000),
+  // 在途投递的等待态兜底（v0.8.5）。0 = 关闭兜底。
+  // 语义见 lib/index.js 的 settleInflight 与 docs/PLAN-v0.8.5.md §3。
+  waitTimeoutMs: Schema.number().default(300_000),
 
   // ---- 审批 ----
   approvalEnabled: Schema.boolean().default(true),
   approvalTimeoutMs: Schema.number().default(120_000),
+
+  // ---- 用户问答（ask_user_question，v0.8.5）----
+  // 与审批同构：IM 侧可代答；到点无人应则抛 ASK_ABORTED 让它变成一次「工具报错」，
+  // **绝不**替宿主撤销 turn（理由见 askQuestions 的注释）。
+  questionsEnabled: Schema.boolean().default(true),
+  questionTimeoutMs: Schema.number().default(300_000),
 
   // ---- 输出 ----
   forwardReasoning: Schema.boolean().default(false),
@@ -175,10 +184,19 @@ export function apply(ctx, config) {
           // 不指望宿主抛出稳定的忙异常（grep 全 dsh 包无 AgentBusy 类）。
           attaching: false,
           queue: 0,
+          // 在途投递单：v0.8.5 起 queue 的每一份额度都对应**一张单子**，
+          // 由 turn/end 或等待态超时兜底来结算（settleInflight），不再由 whenIdle 释放。
+          inflight: null,
+          // 超时解闸后留下的「僵尸 turn」时刻（0 = 无）。它**只**用于挡住自动空闲回收，
+          // 不挡用户显式发起的 rebind/adopt —— 那两条路正是把卡死会话救回来的手。
+          stuckAt: 0,
           subscribers: new Set(),
           buffer: [],
           seq: 0,
           approvals: new Map(),
+          // v0.8.5：等答案的用户问答题（callId → {expiresAt, settle}）。与 approvals 分开存，
+          // 因为两条通道的答案形状、结算语义、错误码都不同，混在一张表里迟早串味。
+          questions: new Map(),
           turn: 0,
           // 新版助手流的 start 帧带着 {attemptId, turn, step}，而 chunk 帧**不带**
           // （dsh-agent/lib/types/runtime-types.d.ts 的 AssistantStreamFrame），
@@ -459,6 +477,7 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.MESSAGE), handler: handleMessage },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.EVENTS), handler: handleEvents },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.APPROVAL), handler: handleApproval },
+      { kind: 'exact', path: join(config.pathPrefix, ROUTES.ANSWER), handler: handleAnswer },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WHERE), handler: handleWhere },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.CONVERSATIONS), handler: handleConversations },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.WORKSPACES), handler: handleWorkspaces },
@@ -630,6 +649,53 @@ export function apply(ctx, config) {
     }
 
 
+    // ── 在途投递单（v0.8.5 §3，docs/PLAN-v0.8.5.md） ─────────────────────
+    //
+    // 病根：`queue` / `attaching` 原来只由 `whenIdle().finally()` 释放，而 whenIdle 的
+    // 前提是 turn 闭合。turn 若永不闭合（典型：ask_user_question 无人应答——该服务
+    // **自身零超时**，只能靠 signal 中断），闸门就永久锁死，后续 /message 一律
+    // 409 agent_busy，进程还活着但对话彻底哑掉（实测卡死逾 6.91 小时）。
+    //
+    // 修法：把「一次已接受的投递」实体化成**一张在途单**，结算权归 settleInflight 独占，
+    // 由三条路触发——turn/end（正常）、whenIdle（兜底复用）、等待态超时（fail-closed）。
+    // 与 askApproval 的 setTimeout+unref / 一次生效写法对齐，差别只在：审批的零超时
+    // 由本端补，而这里的超时**只为解闸门**，不替宿主取消 turn。
+
+    /** 开一张在途单。0 表示关闭超时兜底（此时只剩 turn/end 与 whenIdle 两条释放路）。 */
+    function openInflight(bridge) {
+      const timeoutMs = Math.max(0, Math.trunc(config.waitTimeoutMs))
+      const ticket = { at: Date.now(), timer: null }
+      if (timeoutMs > 0) {
+        ticket.timer = setTimeout(() => settleInflight(bridge, 'timeout'), timeoutMs)
+        ticket.timer.unref?.()
+      }
+      bridge.inflight = ticket
+      return ticket
+    }
+
+    /**
+     * 结算当前在途单：幂等，且是 `queue` / `attaching` 的**唯一**释放点。
+     *
+     * ⚠️ 超时也不抛、不撤 turn：宿主侧 turn 仍活着，这里只把「网桥自己加的闸门」放开，
+     *    否则真正的死锁会从「对话卡住」变成「进程里堆一堆永不释放的 agent」。
+     * ⚠️ settle 之后新到的 /message 会走 live 复用分支（agents.get 命中），
+     *    不会二次 resume，所以提前解闸不会造出两个 handle。
+     */
+    function settleInflight(bridge, reason) {
+      const ticket = bridge.inflight
+      if (!ticket) return false
+      bridge.inflight = null
+      if (ticket.timer) clearTimeout(ticket.timer)
+      bridge.queue = Math.max(0, bridge.queue - 1)
+      bridge.attaching = false
+      if (reason === 'timeout') {
+        bridge.stuckAt = Date.now()
+        log?.warn?.(`${tag} 在途投递超过 ${config.waitTimeoutMs}ms 仍未出现 turn/end` +
+          `（会话 ${bridge.conversation}）：按 fail-closed 释放附着闸门`)
+      }
+      return true
+    }
+
     // 单监听器 + 内部 switch：多注册几个监听器只会让「谁先谁后」变成隐式契约。
     host.on('session/event', (session, event) => {
       const bridge = bridgeBySession(session)
@@ -665,6 +731,11 @@ export function apply(ctx, config) {
             type: EVENT.TURN_END, turn: data.turn, reason: data.reason,
           })
           bridge.turn = 0
+          // 迟到的 turn/end 也算「僵尸清了」：agent 还在推进，自动回收可以重新碰它。
+          bridge.stuckAt = 0
+          // v0.8.5：turn 闭合就是**权威**的闸门释放点（先 push 再放闸，IM 一定先看到
+          // turn/end 再看到闸门放开；反序会让 IM 在收到收尾帧前抢发下一封）。
+          settleInflight(bridge, 'turn-end')
           return
         }
         default:
@@ -817,7 +888,8 @@ export function apply(ctx, config) {
       for (const [conversation, record] of [...records]) {
         if (!record?.dshSessionId) continue
         const bridge = bridges.get(conversation)
-        if (bridge && (bridge.attaching || bridge.queue > 0)) continue
+        // v0.8.5：stuckAt 意味着「闸门已放但 turn 未必真的闭合」，自动回收不许碰它。
+        if (bridge && (bridge.attaching || bridge.queue > 0 || bridge.stuckAt)) continue
         const last = Number(record.lastActiveAt) || Number(record.createdAt) || 0
         if (now - last < ttl) continue
         await recycleConversation(conversation, '空闲回收')
@@ -872,7 +944,7 @@ export function apply(ctx, config) {
       return new Promise((resolve) => {
         let timer = null
         const finish = (outcome, via) => {
-          if (!bridge.approvals.has(callId)) return   // 超时路径已删表：不重复结算
+          if (!bridge.approvals.has(callId)) return   // 已由 /approval、abort、drainPending 或超时结算过：不重复结算
           bridge.approvals.delete(callId)
           if (timer) clearTimeout(timer)
           push(bridge.conversation, {
@@ -900,6 +972,131 @@ export function apply(ctx, config) {
       return askApproval(bridge, request)
     })
 
+    // ── 用户问答（ask_user_question，v0.8.5）────────────────────────────
+    //
+    // 这一段的每一个判断都来自甲/丙两项审计，改动前请先读 docs/PLAN-v0.8.5.md：
+    //   1. `user-questions/request` 是 **Agent 作用域**的 waterfall，签名与
+    //      `approval/request` 完全同构 `(request, next) => Promise<AskUserQuestionAnswer>`；
+    //      无人接管即 reject NO_PROVIDER —— 桥只要在审批答案器旁边再挂一个同名监听器。
+    //   2. **等待没有超时**：宿主那条链只能靠 signal 中断，所以超时兜底必须自己写。
+    //   3. 超时**不能**去撤销宿主 turn。撤销 turn 只会把「对话卡住」升级成
+    //      「进程里堆着永不释放的 agent」；抛 ASK_ABORTED 让它变成一次工具报错，
+    //      turn 自己能收尾，闸门（settleInflight）也就能自己放。
+    //   4. `next` 的类型是 `() => Promise<...>`，**不接受参数** —— 想拒绝只能 throw。
+
+    /** 把失败统一包成带 `code` 的 Error（错误码全集见 dsh-user-questions 的 types）。 */
+    function questionError(code, detail) {
+      const error = new Error(detail ? `用户问答未完成：${code}（${detail}）` : `用户问答未完成：${code}`)
+      error.code = code
+      return error
+    }
+
+    /**
+     * 把 AskUserQuestionItem 投影成 IM 侧够用的载荷。
+     * 只带渲染必需字段（id / question / header / options / multiSelect）：
+     * 契约里的 `detail` / `intent` 是给 Web UI 的，转发过去只会让 IM 侧多写无用分支。
+     */
+    function renderQuestion(item) {
+      const options = (Array.isArray(item?.options) ? item.options : [])
+        .map((option) => ({
+          label: String(option?.label ?? ''),
+          description: option?.description ? String(option.description) : undefined,
+        }))
+        .filter((option) => option.label)
+      return {
+        id: String(item?.id ?? ''),
+        question: String(item?.question ?? ''),
+        header: item?.header ? String(item.header) : undefined,
+        multiSelect: !!item?.multiSelect,
+        options,
+      }
+    }
+
+    /**
+     * answers[] → AskUserQuestionAnswerItem[]，只留 {id, selected[], custom?}。
+     * fail-closed：筛完一条都不剩就当作「没答」，绝不能把空数组当成「用户选了空」塞回工具。
+     */
+    function normalizeAnswers(list) {
+      const out = []
+      for (const item of Array.isArray(list) ? list : []) {
+        const id = String(item?.id ?? '')
+        if (!id) continue
+        const selected = (Array.isArray(item?.selected) ? item.selected : [])
+          .map((label) => String(label))
+          .filter(Boolean)
+        const custom = typeof item?.custom === 'string' && item.custom.trim() ? item.custom : undefined
+        if (!selected.length && custom === undefined) continue
+        out.push(custom === undefined ? { id, selected } : { id, selected, custom })
+      }
+      return out
+    }
+
+    /**
+     * 会话改指/接管前把在途的审批与问答**结算掉**。
+     *
+     * ⚠️ 这里绝不能只是 `bridge.approvals = new Map()`：settle 的幂等判据是
+     * `Map.has(callId)`，把整张表换成新对象后，旧定时器醒来会认为「已经结算过了」
+     * 而直接 return —— 于是那个 promise 再也没人 resolve，agent 永久悬挂。
+     * 必须**先结算、再换表**。
+     */
+    function drainPending(bridge, reason) {
+      for (const pending of [...bridge.approvals.values()]) {
+        pending.settle(APPROVAL_OUTCOME.REJECTED, reason)
+      }
+      for (const pending of [...bridge.questions.values()]) {
+        pending.settle(null, reason)
+      }
+      bridge.approvals = new Map()
+      bridge.questions = new Map()
+    }
+
+    /** 等答案的问答（与 askApproval 同构，唯一的差别是出参形状与超时结局）。 */
+    function askQuestions(bridge, request) {
+      const questions = Array.isArray(request?.questions) ? request.questions : []
+      if (!questions.length) return Promise.reject(questionError('EMPTY_QUESTIONS'))
+
+      const callId = `im-q-${Date.now()}-${randomInt(1_000_000)}`
+      const timeoutMs = Math.max(1000, Math.trunc(config.questionTimeoutMs))
+      const expiresAt = Date.now() + timeoutMs
+
+      return new Promise((resolve, reject) => {
+        let timer = null
+        // 单一幂等出口：answers 为真 → resolve，为 null → reject(ASK_ABORTED)。
+        const finish = (answers, via) => {
+          if (!bridge.questions.has(callId)) return   // 已由 /answer、abort 或 drainPending 结算
+          bridge.questions.delete(callId)
+          if (timer) clearTimeout(timer)
+          push(bridge.conversation, {
+            type: EVENT.QUESTION_RESOLVED, callId, via, answered: Array.isArray(answers),
+          })
+          if (Array.isArray(answers)) resolve({ answers })
+          else reject(questionError('ASK_ABORTED', via))
+        }
+
+        if (request?.signal?.aborted) {
+          finish(null, 'abort')
+          return
+        }
+        timer = setTimeout(() => finish(null, 'timeout'), timeoutMs)
+        timer.unref?.()
+        bridge.questions.set(callId, { expiresAt, settle: finish })
+        push(bridge.conversation, {
+          type: EVENT.QUESTION_REQUIRED, callId, expiresAt,
+          questions: questions.map(renderQuestion),
+        })
+        // turn 被取消 → 必须结算，否则这个问答会挂到进程结束。
+        request?.signal?.addEventListener?.('abort', () => finish(null, 'abort'), { once: true })
+      })
+    }
+
+    host.on('user-questions/request', (request, next) => {
+      const bridge = bridgeByAgent(request?.agent?.id)
+      // 反查不到（agent 非本桥托管）或关掉了问答，就原样交还给框架 ——
+      // 那时它会以 NO_PROVIDER / DELEGATED_CALLER 收场，行为与没装桥时一致，fail-open 且不越权。
+      if (!bridge || !config.questionsEnabled) return next()
+      return askQuestions(bridge, request)
+    })
+
     // ────────────────────────────────────────────────────────────────
     // 路由实现
     // ────────────────────────────────────────────────────────────────
@@ -911,6 +1108,30 @@ export function apply(ctx, config) {
      * （骨架早期版本把它做成了裸端点，本版修正：它现在会返回 cwd / statePath
      *   这类本机路径信息，裸奔等于把部署细节送给任何能连到端口的人。）
      */
+    /**
+     * v0.8.5：把「还有单子在途」的对话汇总出来，供 /health 一眼看清卡在哪一环。
+     *
+     * 甲项审计时最难的一步就是判断 QQ 侧到底是「没收到事件」还是「agent 在等答案」——
+     * 这两件事在原来的 /health 上长得一模一样。现在 approvals / questions / stuckAt
+     * 分开列，等答案（questions>0 且 stuckAt=0）与闸门已放（stuckAt>0）能直接区分。
+     */
+    function pendingSummary() {
+      const out = []
+      for (const [conversation, bridge] of bridges) {
+        if (!bridge.attaching && !bridge.queue && !bridge.approvals.size
+          && !bridge.questions.size && !bridge.stuckAt) continue
+        out.push({
+          conversation,
+          attaching: !!bridge.attaching,
+          queue: bridge.queue,
+          approvals: bridge.approvals.size,
+          questions: bridge.questions.size,
+          stuckAt: bridge.stuckAt || 0,
+        })
+      }
+      return out
+    }
+
     function handleHealth(request, response) {
       if (!authorize(request, response, config)) return
       writeJson(response, 200, {
@@ -918,6 +1139,7 @@ export function apply(ctx, config) {
         bridgeVersion: BRIDGE_VERSION,
         uptimeMs: Math.round(process.uptime() * 1000),
         conversations: records.size,
+        pending: pendingSummary(),
         // 定位相关的诊断信息：让排查的人不必去翻配置文件
         pathPrefix: config.pathPrefix,
         cwd: config.cwd,
@@ -1016,6 +1238,9 @@ export function apply(ctx, config) {
       }
       bridge.attaching = true
       bridge.queue += 1
+      // v0.8.5：额度与单子一一对应，开闸的同时开单；下面任何提前 return 的路径
+      // 都已经先写回响应，**不会**留下没结算的单（结算只在成功投递与 catch 里做）。
+      openInflight(bridge)
 
       try {
         // 1) boot 闸门：loader 未就绪时 agents.create 会失败。loader 缺席也不阻塞投递。
@@ -1172,14 +1397,15 @@ export function apply(ctx, config) {
           source: { kind: 'user' },
         }))
 
-        // 5) 不阻塞响应：空闲后 flush 会话记录再放掉在途计数（契约 §9 顺序）。
+        // 5) 不阻塞响应：空闲后 flush 会话记录（契约 §9 顺序）。
+        //    v0.8.5：这里**不再**自己放闸——闸门归 settleInflight 独占。
+        //    whenIdle 能 resolve 说明 turn 已闭合，settle 会命中同一张单（幂等），
+        //    所以这条只是「turn/end 没派到本桥」时的兜底；真正卡死时三条路里
+        //    只剩等待态超时走得通，那正是这次要修的场景。
         bridge.agent.whenIdle()
           .then(() => host.sessions.flush(bridge.agent.session))
           .catch((error) => log?.warn?.(`${tag} 会话收尾失败：${String(error)}`))
-          .finally(() => {
-            bridge.queue = Math.max(0, bridge.queue - 1)
-            bridge.attaching = false
-          })
+          .finally(() => settleInflight(bridge, 'idle'))
 
         // 记账：lastActiveAt 是轮转策略（on-demand / daily）判活的依据（§2.3），
         // 投递成功必须更新它，否则「久未活动」永远判不出来。
@@ -1195,8 +1421,8 @@ export function apply(ctx, config) {
         idempotencyRemember(key, accepted)
         writeJson(response, 202, accepted)
       } catch (error) {
-        bridge.queue = Math.max(0, bridge.queue - 1)
-        bridge.attaching = false
+        // v0.8.5：失败路径也走同一个结算口，闸门与额度不会再各放各的。
+        settleInflight(bridge, 'error')
         // 因我方原因没接受：撤掉在途标记，否则同一把键重试会命中标记拿到
         // duplicate: true，而消息其实一次都没投出去。
         idempotencyForget(key)
@@ -1293,7 +1519,8 @@ export function apply(ctx, config) {
         return
       }
       if (Date.now() > pending.expiresAt) {
-        bridge.approvals.delete(callId)
+        // ⚠️ 不要在这里先 delete：settle 的幂等判据就是 `Map.has(callId)`，
+        // 先删表会让 settle 变成空操作，promise 再也没有人 resolve（v0.8.5 修）。
         pending.settle(APPROVAL_OUTCOME.REJECTED, 'timeout')
         writeError(response, ERROR_CODE.AGENT_BUSY, '该审批已超时')
         return
@@ -1302,8 +1529,48 @@ export function apply(ctx, config) {
         writeError(response, ERROR_CODE.UNSUPPORTED, '验证码不正确')
         return
       }
-      bridge.approvals.delete(callId)
       pending.settle(outcome, 'im')
+      writeJson(response, 200, { ok: true })
+    }
+
+    /** POST /answer — IM 回执用户问答（v0.8.5 增量）。与 /approval 同构，只有答案形状不同。 */
+    async function handleAnswer(request, response) {
+      if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
+      const body = await readJsonBody(request)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+      const conversation = String(body.conversation ?? '')
+      const callId = String(body.callId ?? '')
+      if (!conversation || !callId || !Array.isArray(body.answers)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '缺少 conversation / callId / answers[]')
+        return
+      }
+      const bridge = bridges.get(conversation)
+      if (!bridge) {
+        writeError(response, ERROR_CODE.NOT_FOUND, `未知对话 ${conversation}`)
+        return
+      }
+      const pending = bridge.questions.get(callId)
+      if (!pending) {
+        // 与审批同语义：已决议 / 已超时都归为「幂等冲突」。
+        writeError(response, ERROR_CODE.AGENT_BUSY, `该问答已决议或已超时：${callId}`)
+        return
+      }
+      if (Date.now() > pending.expiresAt) {
+        pending.settle(null, 'timeout')
+        writeError(response, ERROR_CODE.AGENT_BUSY, '该问答已超时')
+        return
+      }
+      const answers = normalizeAnswers(body.answers)
+      if (!answers.length) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, 'answers 里没有有效条目（id 必填，且要有 selected 或 custom）')
+        return
+      }
+      pending.settle(answers, 'im')
       writeJson(response, 200, { ok: true })
     }
 
@@ -1601,7 +1868,7 @@ export function apply(ctx, config) {
         bridge.turn = 0
         bridge.attempt = null
         bridge.toolCalls = new Map()
-        bridge.approvals = new Map()
+        drainPending(bridge, 'retarget')
 
         // R3：改指后新会话还没被任何东西写过标题，这里就地补上，否则列表里那一条
         // 会退回显示成一串 dshSessionId。旧会话的标题原样留着（它不再被本对话指向，
@@ -1784,7 +2051,7 @@ export function apply(ctx, config) {
           bridge.turn = 0
           bridge.attempt = null
           bridge.toolCalls = new Map()
-          bridge.approvals = new Map()
+          drainPending(bridge, 'retarget')
 
           // 这里**不**调 writeSessionTitle：目标会话此刻没有 live agent，rename 的
           // not-live 校验过不去，调了只会刷一条没用的警告。标题由下一次 /message 的

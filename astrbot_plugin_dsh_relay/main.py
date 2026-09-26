@@ -707,6 +707,36 @@ class BridgeTransport:
             },
         )
 
+    # ---- §3.4 /answer（契约 §16）-------------------------------------
+
+    async def send_answer(
+        self, *, conversation: str, call_id: str, answers: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """``POST /answer``。``answers`` 形状为 ``[{id, selected[], custom?}]``。
+
+        这里只做**结构性**校验：空列表会被桥的 ``normalizeAnswers`` 按 fail-closed
+        筛成空数组并回 400 —— 与其让用户看到一个网桥错误码，不如本地就说清楚。
+        """
+        if not call_id:
+            raise BridgeError(
+                "缺少 callId：必须由本地 pending 表按 code 反查后再回执",
+                code=contract.ERROR_UNSUPPORTED,
+            )
+        if not answers:
+            raise BridgeError(
+                "answers 不能为空：空答案会被桥按 fail-closed 拒绝",
+                code=contract.ERROR_UNSUPPORTED,
+            )
+        return await self._request(
+            "POST",
+            contract.ROUTE_ANSWER,
+            body={
+                "conversation": conversation,
+                "callId": call_id,
+                "answers": answers,
+            },
+        )
+
     async def aclose(self) -> None:
         """关闭连接池。由 ``Main.terminate`` 调用。"""
         self._closed = True
@@ -733,6 +763,10 @@ class Main(Star):
         #: 待审批：``(会话键, code) -> {callId, outcome, deadline}``。
         #: 必须按 code 反查 callId —— IM 用户只能看到 code，看不到 callId。
         self._pending: dict[tuple[str, str], dict[str, Any]] = {}
+        #: 待回答：``(会话键, code) -> {callId, deadline, questions, answers}``。
+        #: 与 ``_pending`` **分开存**：审批答完即弃（一次有效），问答要能逐题补交，
+        #: 合表会让"这题答过没有"和"这个审批回过没有"两套判据互相误伤。
+        self._pending_answers: dict[tuple[str, str], dict[str, Any]] = {}
 
     # ---- 生命周期 ----------------------------------------------------
 
@@ -903,6 +937,14 @@ class Main(Star):
             return
 
         # 审批回执走独立分支：它不是对话内容，不能投给 agent。
+        # 问答回执同理：它不是对话内容，不能投给 agent。
+        if head == contract.COMMAND_ANSWER:
+            async for result in self._handle_answer_command(event, command):
+                yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
                 yield result
@@ -1078,6 +1120,15 @@ class Main(Star):
                     yield result
                 continue
 
+            if kind == contract.EVENT_QUESTION_REQUIRED:
+                async for result in self._on_question_required(event, item):
+                    yield result
+                continue
+
+            if kind == contract.EVENT_QUESTION_RESOLVED:
+                self._forget_question(str(item.get("callId") or ""))
+                continue
+
             if kind == contract.EVENT_APPROVAL_RESOLVED:
                 self._forget_call(str(item.get("callId") or ""))
                 continue
@@ -1146,6 +1197,85 @@ class Main(Star):
         )
         lines.append(f"（{timeout_ms // 1000} 秒内无回执则按拒绝处理）")
         await event.send(event.plain_result("\n".join(lines)))
+
+    async def _on_question_required(
+        self, event: AstrMessageEvent, frame: dict[str, Any]
+    ) -> AsyncIterator[Any]:
+        """把宿主的提问转达给用户，并把 ``code → callId`` 记进本地表（契约 §16）。
+
+        与审批转达的差别只有载荷（这里是 ``questions[]``，不是单个工具名），
+        外加一条本地约束：**答案要能逐题补交** —— 一次带多个问题时，很难要求
+        用户在一条命令里把所有题都答完。
+        """
+        if not self._cfg("questions_enabled", True):
+            return
+        call_id = str(frame.get("callId") or "").strip()
+        raw = frame.get("questions")
+        questions = (
+            [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        )
+        if not call_id or not questions:
+            logger.warning("[dsh_relay] 问答事件缺少 callId/questions，已忽略")
+            return
+
+        timeout_ms = max(1000, int(self._cfg("question_timeout_ms", 300000) or 300000))
+        code = self._issue_question_code(event.unified_msg_origin)
+        self._pending_answers[(event.unified_msg_origin, code)] = {
+            "callId": call_id,
+            "deadline": time.monotonic() + timeout_ms / 1000.0,
+            "questions": questions,
+            "answers": {},
+        }
+
+        prefix = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
+        lines = ["DSH 想问你："]
+        for index, item in enumerate(questions, start=1):
+            head = str(item.get("header") or "").strip()
+            lines.append(f"{index}. {head or '（未命名提问）'}")
+            text = str(item.get("question") or "").strip()
+            if text:
+                lines.append(f"　{text}")
+            options = item.get("options") if isinstance(item.get("options"), list) else []
+            for pos, option in enumerate(options, start=1):
+                if not isinstance(option, dict):
+                    continue
+                label = str(option.get("label") or "").strip()
+                if not label:
+                    continue
+                desc = str(option.get("description") or "").strip()
+                lines.append(f"　[{pos}] {label}" + (f" —— {desc}" if desc else ""))
+            if item.get("multiSelect"):
+                lines.append("　（可多选，序号之间用逗号分隔）")
+        lines.append(f"· 验证码：{code}")
+        if len(questions) == 1:
+            lines.append(
+                f"　作答：{prefix}{contract.COMMAND_ANSWER} {code} <选项序号|文字>"
+            )
+        else:
+            lines.append(
+                f"　作答：{prefix}{contract.COMMAND_ANSWER} {code} <问题序号> <选项序号|文字>"
+                "（可逐题补交，答齐即回执）"
+            )
+        lines.append(f"（{timeout_ms / 60000:g} 分钟内没有作答，这次提问就会作废）")
+        await event.send(event.plain_result("\n".join(lines)))
+
+    def _issue_question_code(self, umo: str) -> str:
+        """发一个 4 位数字验证码，避开本会话里已经在表上的号码。"""
+        while True:
+            code = f"{random.randint(1000, 9999)}"
+            if (umo, code) not in self._pending_answers:
+                return code
+
+    def _forget_question(self, call_id: str) -> None:
+        """``question/resolved`` 到达：这次提问无论答完、超时还是改指，都要销号。
+
+        只清本地表：已提交的答案走的是用户命令那条路径，不在这里清理。
+        """
+        if not call_id:
+            return
+        for key, record in list(self._pending_answers.items()):
+            if record.get("callId") == call_id:
+                self._pending_answers.pop(key, None)
 
     def _forget_call(self, call_id: str) -> None:
         if not call_id:
@@ -1484,6 +1614,129 @@ class Main(Star):
         label = "允许一次" if outcome == contract.APPROVAL_ALLOW_ONCE else "拒绝"
         yield event.plain_result(f"已提交：{label}。")
 
+    async def _handle_answer_command(
+        self, event: AstrMessageEvent, command: str
+    ) -> AsyncIterator[Any]:
+        """``/dsh answer <code> [问题序号] <选项序号|自由文字>``。契约 §16。
+
+        与审批回执的两点差别：
+          1. 审批一条结论就完事；问答要**逐题补交**，答齐才回执。
+          2. 所以只有 ``len(answers) >= len(questions)`` 时才碰网桥，中途作答
+             只落本地表 —— 少一次无谓的 400，就少一次"答案被吞"的机会。
+        """
+        parts = command.split()
+        head = parts[0].lower()
+        if len(parts) < 3 or not parts[1].strip():
+            yield event.plain_result(
+                f"用法：{head} <验证码> [问题序号] <选项序号|文字>（多题可逐题补交）"
+            )
+            return
+        code = parts[1].strip()
+
+        # 与审批同构：IM 用户只看得见 code，callId 由本地表反查。
+        key = (event.unified_msg_origin, code)
+        record = self._pending_answers.get(key)
+        if record is None:
+            yield event.plain_result("这个验证码已失效或不属于本会话。")
+            return
+        if time.monotonic() > float(record.get("deadline") or 0):
+            self._pending_answers.pop(key, None)
+            yield event.plain_result("这次提问已超时作废（DSH 那边已中止等待）。")
+            return
+
+        raw_questions = record.get("questions")
+        questions = (
+            [item for item in raw_questions if isinstance(item, dict)]
+            if isinstance(raw_questions, list)
+            else []
+        )
+        if not questions:
+            self._pending_answers.pop(key, None)
+            yield event.plain_result("这次提问没有可作答的内容，已作废。")
+            return
+        total = len(questions)
+
+        # 多题时形如 ``answer 1234 2 1,3``；单题时省掉问题序号，
+        # 免得"问题 1"和"选项 1"两个 1 在用户眼里撞车。
+        index = 1
+        payload = " ".join(parts[2:]).strip()
+        if total > 1 and len(parts) >= 4 and parts[2].strip().isdigit():
+            candidate = int(parts[2].strip())
+            if 1 <= candidate <= total:
+                index = candidate
+                payload = " ".join(parts[3:]).strip()
+        if not payload:
+            yield event.plain_result(
+                f"用法：{head} {code} <选项序号|文字>"
+                if total == 1
+                else f"用法：{head} {code} <问题序号> <选项序号|文字>"
+            )
+            return
+
+        item = questions[index - 1]
+        question_id = str(item.get("id") or "").strip() or f"q{index}"
+        raw_options = item.get("options")
+        labels = [
+            str(option.get("label") or "").strip()
+            for option in (raw_options if isinstance(raw_options, list) else [])
+            if isinstance(option, dict) and str(option.get("label") or "").strip()
+        ]
+
+        tokens = [token.strip() for token in payload.split(",") if token.strip()]
+        entry: dict[str, Any] = {"id": question_id, "selected": []}
+        if labels and tokens and all(token.isdigit() for token in tokens):
+            picks = [int(token) for token in tokens]
+            if any(pick < 1 or pick > len(labels) for pick in picks):
+                yield event.plain_result(
+                    f"选项序号越界：第 {index} 题只有 1～{len(labels)} 可选。"
+                )
+                return
+            if not item.get("multiSelect") and len(picks) > 1:
+                yield event.plain_result(f"第 {index} 题是单选，只能给一个序号。")
+                return
+            entry["selected"] = list(dict.fromkeys(labels[pick - 1] for pick in picks))
+        elif labels and any(token.isdigit() for token in tokens):
+            # 半序号半文字是最常见的误输入，在这里拦下，
+            # 别让它撞到桥端 normalizeAnswers 的 fail-closed 上白白丢一题。
+            yield event.plain_result("序号和自由文字不能混着写，请重发这一题。")
+            return
+        else:
+            entry["custom"] = payload
+
+        answers = record.setdefault("answers", {})
+        answers[question_id] = entry
+        if len(answers) < total:
+            yield event.plain_result(f"已记录第 {index} 题，还剩 {total - len(answers)} 题。")
+            return
+
+        try:
+            await self._transport_or_create().send_answer(
+                conversation=event.unified_msg_origin,
+                call_id=str(record.get("callId") or ""),
+                answers=list(answers.values()),
+            )
+        except BridgeError as exc:
+            if exc.status in (409, 404):
+                # 409=已决议或已超时，404=提问已销毁：都是"不必再答了"，不是故障。
+                self._pending_answers.pop(key, None)
+                yield event.plain_result(
+                    "这次提问已经被处理过了（已决议或已超时）。"
+                    if exc.status == 409
+                    else "该提问已失效，DSH 那边不再等待答案了。"
+                )
+                return
+            logger.warning(f"[dsh_relay] 答案回执失败：{exc}")
+            yield event.plain_result(_prefixed_failure("答案回执失败", exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[dsh_relay] 答案回执失败：{exc}")
+            yield event.plain_result(_prefixed_failure("答案回执失败", exc))
+            return
+
+        self._pending_answers.pop(key, None)
+        yield event.plain_result(f"已提交全部答案，共 {len(answers)} 题。")
+
+
     # ---- 回帖（结构已定型，P1 复用）----------------------------------
 
     async def _reply(self, event: AstrMessageEvent, text: str) -> AsyncIterator[Any]:
@@ -1730,6 +1983,10 @@ def _usage_text(base: str) -> str:
         (
             f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",
             "允许一次待审批操作",
+        ),
+        (
+            f"{base} {contract.COMMAND_ANSWER} <验证码> <选项序号|文字>",
+            "回答 DSH 的提问（多问题时把 <问题序号> 写在前面，可逐题补交）",
         ),
         (
             f"{base} {contract.APPROVAL_COMMAND_REJECT} <验证码>",

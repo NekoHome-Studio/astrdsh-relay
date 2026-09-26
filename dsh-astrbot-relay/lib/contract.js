@@ -42,6 +42,7 @@ export const ROUTES = Object.freeze({
   REBIND: '/session/rebind',        // POST  把某 IM 对话改指到指定工作区（契约 §13.2）
   FORK: '/session/fork',            // POST  从某对话的完整轮次边界分支出新对话（契约 §14）
   ADOPT: '/session/adopt',          // POST  把某 IM 对话改指到一个**已存在**的会话（契约 §15）
+  ANSWER: '/answer',                // POST  回执用户问答（v0.8.5 增量：问答双通道的对侧）
 })
 
 /** 下行事件类型。契约 §4。 */
@@ -52,6 +53,9 @@ export const EVENT = Object.freeze({
   TOOL_CALL: 'tool/call',
   APPROVAL_REQUIRED: 'approval/required',
   APPROVAL_RESOLVED: 'approval/resolved',
+  // v0.8.5 增量：用户问答（ask_user_question）走独立通道，与审批**严格分离**双通道。
+  QUESTION_REQUIRED: 'question/required',
+  QUESTION_RESOLVED: 'question/resolved',
   MESSAGE_FINAL: 'message/final',
   TURN_END: 'turn/end',
   HEARTBEAT: 'heartbeat',
