@@ -56,7 +56,7 @@ def turn_frames(*, deltas=(), final="", gap=None, extra=(), reason=None):
 section("桩自身的正确性：假 transport 不能与真实 transport 漂移")
 
 
-@test("12 个方法的名字与参数名与真实 BridgeTransport 逐一对齐")
+@test("13 个方法的名字与参数名与真实 BridgeTransport 逐一对齐")
 def _() -> None:
     # 这条是**元测试**：桩写错了，上面所有用例都会给出看似合理的假结论。
     # 实际踩过：假 fork 写成了 `upto_turn`，真名是 `at_seq`，于是处理器的
@@ -67,6 +67,7 @@ def _() -> None:
     names = [
         "health", "where", "workspaces", "rebind", "fork", "adopt",
         "send_message", "events", "send_approval", "send_answer", "proactive", "aclose",
+        "rpc",
     ]
     for name in names:
         real = inspect.signature(getattr(plugin_main.BridgeTransport, name))
@@ -195,13 +196,64 @@ def _() -> None:
 section("流式回帖与 turn/end 收敛")
 
 
+@test("stream_enabled=false ⇒ 中间分片不刷（开关管的是流式，不是静音）")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    # 与下方对照组**完全同参**，只差 stream_enabled：``flush_chars=1`` + 带句末标点的 delta。
+    # 若沿用默认 flush_chars=200，``_pick_cut`` 会把这些短 delta 合法地攒住不发，
+    # 于是「把 :1214 的开关判断整行删掉」也照样变绿——那是假绿，测不出开关失效。
+    m, _c, t = mod.make_main(stream_enabled=False, flush_chars=1)
+    t.frames = turn_frames(deltas=("第一部。", "第二部。"), final="权威最终文本")
+    event = drive(m, FakeEvent(message_str="dsh 你好"))
+    assert event.sent_text == [], event.sent_text
+
+
+@test("stream_enabled=false ⇒ 收敛回帖照发，关流式不许把问答变成哑巴")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    m, _c, t = mod.make_main(stream_enabled=False, flush_chars=1)
+    t.frames = turn_frames(deltas=("第一部。", "第二部。"), final="权威最终文本")
+    event = drive(m, FakeEvent(message_str="dsh 你好"))
+    assert event.yielded_text == ["权威最终文本"], event.all_text
+
+
 @test("最终文本以 message/final 为准，绝不用 text/delta 拼")
 def _() -> None:
     mod = __import__("_fake_astrbot")
-    m, _c, t = mod.make_main(stream_enabled=False)
-    t.frames = turn_frames(deltas=("部分", "内容"), final="权威最终文本")
+    m, _c, t = mod.make_main(stream_enabled=False, flush_chars=1)
+    t.frames = turn_frames(deltas=("第一部。", "第二部。"), final="权威最终文本")
     event = drive(m, FakeEvent(message_str="dsh 你好"))
     assert event.all_text == ["权威最终文本"], event.all_text
+
+
+@test("stream_enabled=false ⇒ 工具调用提示也一并停（它同属流式刷屏）")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    m, _c, t = mod.make_main(stream_enabled=False)
+    t.frames = turn_frames(
+        extra=[{"type": CONTRACT.EVENT_TOOL_CALL, "name": "read_file"}],
+        final="答案",
+    )
+    event = drive(m, FakeEvent(message_str="dsh 你好"))
+    assert not any("调用工具" in text for text in event.all_text), event.all_text
+    assert event.yielded_text == ["答案"], event.all_text
+
+
+@test("对照组：同一条路径在 stream_enabled=true 时确实会刷分片与工具提示")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    # ``flush_chars=1``：本层测的是「开关有没有拦住分片」，不是切句策略本身
+    # （切句另有自己的用例）。默认 200 会让这几个短 delta 合法地攒着不发，
+    # 断言就成了空的。
+    m, _c, t = mod.make_main(flush_chars=1)
+    t.frames = turn_frames(
+        deltas=("第一部。", "第二部。"),
+        extra=[{"type": CONTRACT.EVENT_TOOL_CALL, "name": "read_file"}],
+        final="权威最终文本",
+    )
+    event = drive(m, FakeEvent(message_str="dsh 你好"))
+    assert event.sent_text[:2] == ["第一部。", "第二部。"], event.sent_text
+    assert any("调用工具" in text for text in event.sent_text), event.sent_text
 
 
 @test("turn/end 的 reason.kind=error 且尚无输出 ⇒ 如实报错")
@@ -571,6 +623,225 @@ def _() -> None:
         assert "not a valid url" in str(exc), exc
     else:
         raise AssertionError("桩的 fromURL 没有照抄真实实现的校验")
+
+
+section("§11 /rpc：管理员门、本地预检与失败文案的映射")
+
+
+#: 白名单里**没有必填参数**的端点：只想看「信封怎么回」时用它，
+#: 免得每条断言都先被本地预检按「少了必填参数」拦下来。
+_FREE_ENDPOINT = "settings/describe"
+#: 有一条必填参数（``_request``）的端点：用来钉「参数原样透传」。
+_ARG_ENDPOINT = "session/list"
+
+
+def _admin_event(message: str, *, admin: bool = True) -> FakeEvent:
+    return FakeEvent(message_str=message, admin=admin)
+
+
+def _bridge_error(status, code, details=None):
+    return plugin_main.BridgeError(
+        "控制面调用失败", code=code, status=status, details=details
+    )
+
+
+@test("非管理员 ⇒ 明确拦下、不碰网桥，且不投给 agent")
+def _() -> None:
+    # 「拦下」和「静默拦下」是两回事：PermissionTypeFilter 那种做法会让用户
+    # 只收到默认 LLM 的胡话，没人知道是权限问题，所以这条同时钉住三件事——
+    # 有明白话、零转发、事件被接管。
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc session/list", admin=False))
+    text = "\n".join(event.all_text)
+    assert "只有管理员能用" in text, text
+    assert "admins_id" in text, text
+    assert t.called("rpc") == [], t.calls
+    assert event.call_llm is True and event.stopped is True, (event.call_llm, event.stopped)
+
+
+@test("管理员但没写 endpoint ⇒ 只给用法，不发盲请求")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc"))
+    text = "\n".join(event.all_text)
+    assert "要调哪个端点" in text, text
+    assert "<endpoint> [json]" in text, text  # 用法得能照着抄
+    assert t.called("rpc") == [], t.calls
+    assert event.call_llm is True and event.stopped is True, (event.call_llm, event.stopped)
+
+
+@test("参数不是合法 JSON ⇒ 原样带上解析错误，且不发请求")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event('dsh rpc session/list {"limit": }'))
+    text = "\n".join(event.all_text)
+    assert "不是合法 JSON" in text, text
+    assert "sessionId" in text, text  # 例子得是真的能抄的写法
+    assert t.called("rpc") == [], t.calls
+
+
+@test("参数是 JSON 但不是对象（数组/字符串）⇒ 提示要花括号包起来")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc session/list [1, 2]"))
+    text = "\n".join(event.all_text)
+    assert "JSON 对象" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+# ── 本地预检：五类错要在**离用户最近的地方**讲成人话 ──────────────────
+# 这五种在宿主那边会先撞三道门，回回来的只有笼统的 400/403，等于「请求没出
+# 本机却长得像宿主回的错」，把排查往错方向带。所以下面每条都同时钉两件事：
+# 文案要点到病因、且**零转发**。
+
+
+@test("预检·名字拼错 ⇒ 直说宿主不认识，不转发")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc session/nope"))
+    text = "\n".join(event.all_text)
+    assert "本地拦下" in text, text
+    assert "名字可能拼错" in text, text
+    assert "session/nope" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+@test("预检·流式端点 ⇒ 点明 HTTP 调不动（而不是让它去撞宿主那道 403）")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc session/follow"))
+    text = "\n".join(event.all_text)
+    assert "流式端点" in text, text
+    assert "本地拦下" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+@test("预检·有副作用的端点不在白名单 ⇒ 指向 allowedRpcMethods，不转发")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event('dsh rpc credentials/set {"_request": {}}'))
+    text = "\n".join(event.all_text)
+    assert "白名单" in text, text
+    assert "allowedRpcMethods" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+@test("预检·缺必填参数 ⇒ 连「它认的是」一起给出来")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event("dsh rpc session/list"))
+    text = "\n".join(event.all_text)
+    assert "少了必填参数" in text, text
+    assert "_request" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+@test("预检·多塞了参数 ⇒ 点名是哪个，别让它白跑一趟宿主")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, _admin_event('dsh rpc session/list {"_request": {}, "extra": 1}'))
+    text = "\n".join(event.all_text)
+    assert "不认这些参数" in text, text
+    assert "extra" in text, text
+    assert t.called("rpc") == [], t.calls
+
+
+@test("成功 ⇒ endpoint 与 args 原样透传，且走的是 raw=True 那条路")
+def _() -> None:
+    # 两件事一起钉：maxsplit 的意义（args 里的空格切碎了就会变成「JSON 不合法」，
+    # 而用户完全看不出是自己的参数被本端弄坏的），以及 ``raw=True``——
+    # 少了它，业务失败会先被 ``_ensure_ok`` 抛掉，信封就再也见不到了。
+    m, _c, t = make_main()
+    t.results["rpc"] = {"ok": True, "value": {"items": ["a", "b"], "count": 2}}
+    event = drive(
+        m,
+        _admin_event('dsh rpc session/list {"_request": {"kind": "list", "q": "a b"}}'),
+    )
+    calls = t.called("rpc")
+    assert len(calls) == 1, t.calls
+    assert calls[0]["endpoint"] == "session/list", calls[0]
+    # 参数里的空格不能让 JSON 被切碎：q 那格空格得原样活到传输层，
+    # 否则用户看到的会是「不是合法 JSON」，而病因在本端的切分上。
+    assert calls[0]["args"] == {"_request": {"kind": "list", "q": "a b"}}, calls[0]
+    assert calls[0]["raw"] is True, calls[0]
+    text = "\n".join(event.all_text)
+    assert "端点：session/list（成功）" in text, text
+    assert '"count": 2' in text, text
+    assert event.call_llm is True and event.stopped is True, (event.call_llm, event.stopped)
+
+
+@test("业务失败但 HTTP 200 ⇒ 信封（含 error.code）照样摊开，抬头点出是哪一类")
+def _() -> None:
+    # 契约 §11.1：业务失败也是 200。这条正是 ``raw=True`` 存在的理由——
+    # 默认那条路会把信封换成一句「失败」，用户连 code 都拿不到。
+    m, _c, t = make_main()
+    t.results["rpc"] = {
+        "ok": False,
+        "error": {"code": "gateway/cancelled", "message": "已取消"},
+    }
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert "端点：settings/describe（失败：gateway/cancelled）" in text, text
+    assert '"code": "gateway/cancelled"' in text, text
+    assert "控制面调用失败" not in text, "业务失败不是传输失败，别套错前缀"
+    assert len(t.called("rpc")) == 1, t.calls
+
+
+@test("403 forbidden ⇒ 指向宿主白名单与 token，而不是含糊的失败")
+def _() -> None:
+    m, _c, t = make_main()
+    t.errors["rpc"] = _bridge_error(403, CONTRACT.ERROR_FORBIDDEN)
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert "控制面调用被拒" in text, text
+    assert "allowedRpcMethods" in text, text
+    assert "hmac_mode" in text, text
+
+
+@test("404 not_found ⇒ 先怀疑 bridge_url 指错了地方")
+def _() -> None:
+    m, _c, t = make_main()
+    t.errors["rpc"] = _bridge_error(404, CONTRACT.ERROR_NOT_FOUND)
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert "控制面调用失败" in text, text
+    assert "bridge_url" in text, text
+
+
+@test("其余 BridgeError（500 等）⇒ 走统一失败前缀，不假装成功")
+def _() -> None:
+    m, _c, t = make_main()
+    t.errors["rpc"] = _bridge_error(500, "internal")
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert "控制面调用失败" in text, text
+    assert "（成功）" not in text, text
+
+
+@test("传输层抛非 BridgeError ⇒ 同样只回一句人话，不外泄异常")
+def _() -> None:
+    m, _c, t = make_main()
+    t.errors["rpc"] = RuntimeError("连不上桥接端")
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert "控制面调用失败" in text, text
+    assert "连不上桥接端" in text, text
+
+
+@test("超长返回 ⇒ 信封**完整**落进聊天窗，不再有「只显示前 N 字」这种截断")
+def _() -> None:
+    # 这条以前钉的是「截前 1200 字 + 一句说明」，配一个 _RPC_VALUE_CLIP_CHARS。
+    # 常量删掉之后，判据反过来：**不许**截。理由是这个指令本来就是观景窗——
+    # 信封被截过一次，用户拿去报障的那截刚好把 error.details 挡在外面。
+    m, _c, t = make_main()
+    big = "x" * 2000
+    t.results["rpc"] = {"ok": True, "value": {"blob": big}}
+    event = drive(m, _admin_event(f"dsh rpc {_FREE_ENDPOINT}"))
+    text = "\n".join(event.all_text)
+    assert big in text, "完整值必须整段落到聊天窗"
+    assert "只显示前" not in text, text
+    assert len(text) > len(big), (len(text), len(big))
+    assert not hasattr(plugin_main, "_RPC_VALUE_CLIP_CHARS"), "常量删了就别再回来"
 
 
 summary()

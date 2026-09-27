@@ -1,5 +1,88 @@
 # 更新日志
 
+## v0.9.4 — 2026-09-27
+
+> **给 `stream_enabled=false` 定调：它只关「流式刷屏」，收敛回帖照发。**
+> **`bridgeVersion` 仍是 `6`** —— 只动回帖管道，契约常量表零变化。
+
+### 变更
+
+- **关掉流式开关不再等于静音**：删除 v0.9.3 末尾补的那句早期返回。此后
+  `stream_enabled=false` 时，**只停两样**——中间分片（`text/delta`）与工具调用提示
+  （`tool/call`）（实时读配置，改完不用重启）。除此之外一律照发，共四类：
+  1. `message/final` 收敛出来的那一条最终回答**必须落地**；
+  2. 审批请求与结果（`approval_required` / `approval_resolved`）——送不到用户手上整条 turn 会卡死；
+  3. 用户问答（`question_required`）；
+  4. 链路告警（gap 帧的「链路抖动」、等待超时、事件流中断）。
+  键名是 `stream` 而不是 `mute`——用户要的是别再刷屏，不是把 `/dsh` 问答变成哑巴。
+- **去掉 `stream_ok` 启动快照**：判定流式的唯一权威读点就是每个 delta 帧上的实时读，
+  多留一份快照只会造成「正在跑的 turn 关不掉」。注释里写明这里**不许**再快照。
+
+### 修复
+
+- 关掉流式开关后连最终回答一起丢：用户只关刷屏，却拿到一片沉默。
+
+### 打包与版本
+
+- `scripts/package-release.mjs` 的 `cpSync` 过滤补上 `.bak`（原来只排 `.pyc` / `__pycache__`，
+  仓库里的 `*.bak-sync-*` 会原样进 zip）；仓库与实装目录里的 `.bak*`、`__pycache__` 已全部清掉。
+- 两侧版本号对齐到 `0.9.4`（DSH 侧 `package.json` 与 README 的「最新发布」指针）：
+  出包脚本会校验「DSH 侧版本 = AstrBot 侧版本 = README 指针」，不齐直接拒绝出包。
+- `rpc_allowlist.py` 此前**未入库**（干净检出会缺它，`/rpc` 预检整段失效），本版与
+  `scripts/gen-rpc-methods.mjs` / `scripts/test-rpc-chain.mjs` / `dsh-astrbot-relay/lib/rpc-methods.js`
+  及其原料 `dsh-astrbot-relay/data/` 一并入库。
+
+### 测试
+
+- `scripts/test-im-commands.py` 新增 4 条用例钉死新语义：分片不刷 / 收敛回帖照发 /
+  工具提示同停 / 对照组（`stream_enabled=true` 时两者确实都会刷），并删掉从未使用的
+  `_ARG_OK`。全脚本 **59 通过、0 失败，exit 0**。
+
+## v0.9.3 — 2026-09-27
+
+> **`/dsh rpc` 从「转发出去再说」改成「本地先拦、只透一扇只读观景窗」，并把权限门槛加回来。**
+> **`bridgeVersion` 仍是 `6`** —— 只动 AstrBot 侧这道门，契约常量表零变化。
+
+### 新增
+
+- **`rpc_allowlist.py`**：宿主 `allowedRpcMethods` 缺省值的硬镜像——26 条只读端点 +
+  84 条必填键表。`check(endpoint, args)` 放行返回 `""`，否则返回一句人话。
+  它是本地预检的唯一真相；不追求跟宿主解耦，宿主改表这里就跟着改。
+- **`/dsh rpc <endpoint> [json]`**：直调 DSH 控制面（`BridgeTransport.rpc(raw=True)`），
+  回显**整封 HTTP 200 信封**，不投给 agent。
+
+### 变更
+
+- **预检前置**：请求先过本地白名单，没过就回「本地拦下：{原因}」并直接 return，
+  一个字节都不出本机；403 / 404 再分诊，宿主那层的 `forbidden` 只作兜底。
+- **抬头改口径**：`端点：<endpoint>（<headline>）`，`ok is False` 时把 `error.code`
+  带上去变成 `失败：<code>`，成功就是 `成功`。业务失败的响应也是 HTTP 200，
+  所以抬头先给结论，信封再全量摊开在下面。
+- **权限回归管理员**：`/dsh rpc` 恢复 `event.is_admin()` 内联判定，非管理员只收到
+  一句明白话，**不碰网桥、不投 agent**。白名单收窄的是「能读什么」，不是「谁能读」。
+- **流式开关改为实时读**：`stream_enabled` 从启动时快照改为每次判定现读配置，
+  改完不用重启；关掉后连收敛回帖也不发（⚠️ **v0.9.4 已推翻**：只关刷屏，收敛回帖照发）。
+- **去掉 `_RPC_VALUE_CLIP_CHARS`**：信封全量回显，不再截断——只读面里没有大对象。
+
+### 修复
+
+- 关掉流式开关后仍在刷帖：末尾补上「静音时连收敛回帖也不发」的 return（⚠️ **v0.9.4 已回退**，见上）。
+
+### 文档
+
+- 三处指令表（根 `README.md`、插件 `README.md`、`_usage_text`）的 `/rpc` 行统一为
+  「只读白名单 + 回显 200 信封 + 仅管理员」。
+- `contract.py` 补回 `ERROR_FORBIDDEN`（白名单外零派发是硬要求），
+  `ROUTE_RPC` / `COMMAND_RPC` 注释写明「本地预检 + 仅管理员」。
+- `docs/astrbot-side-capabilities.md` §6.3：`admins_id` 实际值 `["astrbot", "3430088565"]`，
+  并注明它同时是 `/dsh rpc` 的权限源。
+
+### 同步
+
+- **实装目录与仓库目录全量对齐**（`main.py` / `contract.py` / `README.md` / `metadata.yaml`，
+  新增 `rpc_allowlist.py`）。此前实装比仓库多出 5 组改动，就是上面这几条——
+  仓库那份留着旧口径，直接跑会得到「有失败没错误码」的老回执。
+
 ## v0.9.2 — 2026-09-26
 
 > **修掉一个「环境问题伪装成功能全红」的测试隔离缺陷。**

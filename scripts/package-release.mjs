@@ -151,7 +151,7 @@ const stageDir = join(STAGING, ASTRBOT_PKG_NAME)
 cpSync(ASTRBOT_DIR, stageDir, {
   recursive: true,
   // 排除字节码等运行时垃圾，保证产物可复现
-  filter: (src) => !/__pycache__|[\\/].*\.pyc$/.test(src),
+  filter: (src) => !/__pycache__|[\\/].*\.pyc$|[\\/].*\.bak/.test(src),
 })
 const zipName = `${ASTRBOT_PKG_NAME}-${version}.zip`
 writeZipDir(stageDir, join(DIST, zipName), ASTRBOT_PKG_NAME)
@@ -341,13 +341,14 @@ ${preRelease}> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置
 > \`GET /events\`（SSE 下行，环形缓冲 + \`Last-Event-ID\` 续传）、\`POST /approval\`
 > （审批 waterfall，4 位一次性 code）、\`POST /answer\`（用户问答回执：与审批**严格分离**的第二条通道，
 > \`callId\` 前缀 \`im-q-\` 与审批的 \`im-\` 互不干扰）、\`GET /proactive\`（主动消息取件，
-> 有界发件箱 + \`since\` 游标 ack）；含幂等（有界 LRU + TTL）、事件转发、
+> 有界发件箱 + \`since\` 游标 ack）、\`POST /rpc\`（控制面转发，契约 §11：按
+> \`rpc_allowlist\` 里的方法白名单中继到宿主 \`/api\`，非白名单一律预检拦下）；含幂等（有界 LRU + TTL）、事件转发、
 > 卸载期 \`cancel → whenIdle → flush → dispose\` 收尾；两侧 state 持久化、配置校验与
-> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十二方法（health / where / workspaces /
+> Bearer 定长鉴权。AstrBot 侧 \`BridgeTransport\` 十三方法（health / where / workspaces /
 > rebind / fork / adopt / send_message / events / send_approval / send_answer / proactive /
-> aclose）全部实现，含 \`/dsh where\`、
+> rpc / aclose）全部实现，含 \`/dsh where\`、
 > \`/dsh approve|reject\`、\`/dsh answer <验证码>\`、\`/dsh workspaces\`、\`/dsh rebind <工作区 id>\`、
-> \`/dsh fork [轮次序号]\`、\`/dsh adopt\`、流式节流回帖与 \`push_to_session\`。
+> \`/dsh fork [轮次序号]\`、\`/dsh adopt\`、\`/dsh rpc <端点> [json]\`、流式节流回帖与 \`push_to_session\`。
 >
 > **v0.8.6 新增**：用户问答通道（\`ask_user_question\`；下行事件 \`question/required\` /
 > \`question/resolved\`，含 \`/dsh answer\` 指令与 \`questionsEnabled\` / \`questionTimeoutMs\`）；

@@ -68,11 +68,13 @@ try:  # 包内导入（正常安装路径）
     from . import contract
     from . import heartbeat_state as hb
     from . import location_text
+    from . import rpc_allowlist
 except ImportError:  # 直接以模块方式加载时的兜底，与同路线既有插件一致
     import allowlist  # type: ignore[no-redef]
     import contract  # type: ignore[no-redef]
     import heartbeat_state as hb  # type: ignore[no-redef]
     import location_text  # type: ignore[no-redef]
+    import rpc_allowlist  # type: ignore[no-redef]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -136,6 +138,20 @@ def _prefixed_failure(prefix: str, message: Any) -> str:
     text = str(message or "").strip() or "未知错误"
     head = f"{prefix}："
     return text if text.startswith(head) else f"{head}{text}"
+
+
+def _rpc_headline(info: Any) -> str:
+    """``/dsh rpc`` 抬头那半句：``ok`` 为假时把 ``error.code`` 也带上。
+
+    信封本身照样全量摊开，抬头只是让人一眼看出「是哪一类失败」。契约 §11.1 的
+    业务失败给的是 ``gateway/cancelled`` 这种码，比一句「失败」有用得多；判据与
+    ``_ensure_ok`` 一致，用 ``is False``，免得 ``ok`` 缺席被当成失败。
+    """
+    if not isinstance(info, dict) or info.get("ok") is not False:
+        return "成功"
+    error = info.get("error")
+    code = str(error.get("code") or "").strip() if isinstance(error, dict) else ""
+    return f"失败：{code}" if code else "失败"
 
 
 def _looks_like_session_id(value: str) -> bool:
@@ -748,6 +764,43 @@ class BridgeTransport:
         value = await self._request("GET", route)
         return value if isinstance(value, dict) else {}
 
+    # ---- §11 /rpc（契约 §11）-----------------------------------------
+
+    async def rpc(
+        self,
+        *,
+        endpoint: str,
+        args: dict[str, Any] | None = None,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """``POST /rpc``：直调宿主控制面的一个端点。
+
+        本地先过 ``rpc_allowlist.check``（**返回空串才算通过**），把「名字拼错 /
+        是流式端点 / 没放行 / 缺必填 / 参数多余」五类错在离用户最近的地方讲成人话——
+        这五种在宿主那边会先撞三道门，回回来的反而是笼统的 400/403。
+
+        业务失败 HTTP **仍是 200**（契约 §11.1），所以默认必须过 ``_ensure_ok``：
+        拿不到 ``ok: true`` 就抛 ``BridgeError``，调用方只会看到「失败」，看不到
+        失败成什么样。
+
+        ``raw=True`` 是给 ``/dsh rpc`` 那条自查指令留的口子：契约 §11.1 里业务失败
+        也是 200，把信封连 ``ok``/``error.code``/``details`` 一起交回去，用户才有
+        线索往下查——挑完 ``ok`` 就只剩一句「失败了」，反而白跑一趟。HTTP 层的
+        失败（403/404/503…）不在此列，照旧抛错。
+        """
+        name = str(endpoint or "").strip()
+        err = rpc_allowlist.check(name, args)
+        if err:
+            raise BridgeError(err, code=contract.ERROR_UNSUPPORTED)
+        info = await self._request(
+            "POST",
+            contract.ROUTE_RPC,
+            body={"endpoint": name, "args": dict(args or {})},
+        )
+        if raw:
+            return info if isinstance(info, dict) else {"ok": False, "raw": info}
+        return self._ensure_ok(info, "控制面调用")
+
     async def aclose(self) -> None:
         """关闭连接池。由 ``Main.terminate`` 调用。"""
         self._closed = True
@@ -983,6 +1036,25 @@ class Main(Star):
             event.stop_event()
             return
 
+        # 控制面直调：回显的是宿主的调用结果，不是对话内容，不能投给 agent。
+        # 权限判定刻意内联在这里，不用 PermissionTypeFilter：它挂在 handler 级，
+        # 会把这个插件下所有子命令一起卡住；而且权限不足时它静默 return False，
+        # 用户收不到半句提示，消息还会继续流到默认 LLM 那边去。
+        # 本地白名单虽已收窄到 26 条只读端点，但「能读宿主控制面」本身就该限管理员。
+        if head == contract.COMMAND_RPC:
+            if not event.is_admin():
+                yield event.plain_result(
+                    f"{contract.COMMAND_RPC} 会直调宿主的控制面接口，只有管理员能用。"
+                    "要开这个口子的话，得先把这个账号加进 AstrBot 全局配置的 admins_id"
+                    "（data/config/cmd_config.json），改完要重启 AstrBot。"
+                )
+            else:
+                async for result in self._handle_rpc_command(event, command):
+                    yield result
+            event.should_call_llm(True)
+            event.stop_event()
+            return
+
         if head in (contract.APPROVAL_COMMAND_APPROVE, contract.APPROVAL_COMMAND_REJECT):
             async for result in self._handle_approval_command(event, command):
                 yield result
@@ -1070,7 +1142,9 @@ class Main(Star):
         self, event: AstrMessageEvent, queue: asyncio.Queue
     ) -> AsyncIterator[Any]:
         """消费 SSE 帧直到 ``turn/end``，并完成回帖。"""
-        stream_ok = bool(self._cfg("stream_enabled", True))
+        # ⚠️ 这里**不**快照 ``stream_enabled``：唯一的权威读点在每个 delta 帧上
+        # （见下方「实时读」注释）。快照一份的后果是「在跑的 turn 关不掉」，
+        # 而把开关解释成「静音」的后果更贵：关掉之后 /dsh 问答直接哑掉。
         throttle = max(0.0, float(self._cfg("throttle_ms", 2500) or 0) / 1000.0)
         flush_chars = max(1, int(self._cfg("flush_chars", 200) or 1))
         # ``flush_hard_chars``：软阈值（flush_chars）之上找不到句子边界时，
@@ -1136,7 +1210,8 @@ class Main(Star):
 
             if kind == contract.EVENT_TEXT_DELTA:
                 pending += str(item.get("text") or "")
-                if stream_ok and due():
+                # ★ 实时读（不再用开头捕获的 stream_ok）：否则在跑的 turn 会一直发
+                if bool(self._cfg("stream_enabled", True)) and due():
                     cut = _pick_cut(pending, flush_chars, hard_chars)
                     if cut:
                         # 只发到句子边界，剩余部分留在 pending 里继续攒，
@@ -1152,7 +1227,8 @@ class Main(Star):
 
             if kind == contract.EVENT_TOOL_CALL:
                 name = str(item.get("name") or "?")
-                await event.send(event.plain_result(f"· 调用工具 {name}"))
+                if bool(self._cfg("stream_enabled", True)):
+                    await event.send(event.plain_result(f"· 调用工具 {name}"))
                 continue
 
             if kind == contract.EVENT_APPROVAL_REQUIRED:
@@ -1191,6 +1267,16 @@ class Main(Star):
                     logger.warning(f"[dsh_relay] turn 出错但已有输出：{message}")
                 break
 
+        # ★ ``stream_enabled=false`` 只关「流式刷屏」，**收敛回帖照发**。
+        #   开关的名字是 stream 而不是 mute：关掉后中间分片（text/delta）与工具提示
+        #   （tool/call）都不再发。除此之外一律照发，共四类：
+        #     1) 收敛回帖——下面这一条最终回答必须落地；
+        #     2) 审批——approval_required / approval_resolved（走 _on_approval_required，
+        #        不经过开关；送不到用户手上，整条 turn 就卡死）；
+        #     3) 用户问答——question_required（同上，走 _on_question_required）；
+        #     4) 链路告警——gap 帧、等待超时、事件流中断。
+        #   否则用户一关流式，/dsh 问答就变成哑巴，而他要的只是别再刷屏。
+        #   （2026-09-27 定调；此前那句早退已删除）
         # ---- 收敛回帖：最后一片走 yield，前面已由 event.send 发出 ----
         if final_text:
             tail = final_text[len(emitted):] if final_text.startswith(emitted) else final_text
@@ -1786,6 +1872,86 @@ class Main(Star):
         yield event.plain_result(f"已提交全部答案，共 {len(answers)} 题。")
 
 
+    async def _handle_rpc_command(
+        self, event: AstrMessageEvent, command: str
+    ) -> AsyncIterator[Any]:
+        """``/dsh rpc <endpoint> [json]`` —— 直调宿主控制面（契约 §11）。
+
+        这是**只读观景窗，不是后门**。84 条端点里还有 ``credentials/set``、
+        ``commands/execute`` 这类有副作用的，开不开是 DSH 配置侧的显式决定，
+        不该由一条 IM 指令凭空打开，所以这里只放行 26 条无副作用的。
+
+        回的是**信封**而不是挑出来的字段：契约 §11.1 里业务失败也是 HTTP 200，
+        把 ``ok``/``error.code``/``details`` 原样摊开，用户才有线索往下查。
+        为此走的是 ``rpc(raw=True)``——默认那条路会在 ``ok: false`` 时抛错，
+        一抛就只剩「失败了」三个字，等于把信封扔了。HTTP 层的失败照旧按状态码分诊。
+        """
+        parts = command.split(maxsplit=2)
+        if len(parts) < 2 or not parts[1].strip():
+            yield event.plain_result(
+                f"要调哪个端点？用法：{parts[0]} <endpoint> [json]"
+            )
+            return
+        endpoint = parts[1].strip()
+        raw_args = parts[2].strip() if len(parts) >= 3 else ""
+        args: dict[str, Any] = {}
+        if raw_args:
+            try:
+                parsed = json.loads(raw_args)
+            except (ValueError, TypeError):
+                yield event.plain_result(
+                    f"第二个参数不是合法 JSON：{raw_args}。"
+                    '参数写成对象就行，例如 {"sessionId": "im-1"}。'
+                )
+                return
+            if not isinstance(parsed, dict):
+                yield event.plain_result(
+                    "参数必须是 JSON 对象（花括号那种），数组和裸值宿主不收。"
+                )
+                return
+            args = parsed
+
+        # 本地预检先行：名字拼错 / 是流式端点 / 没放行 / 缺必填 / 参数多余，
+        # 这五类在这里就讲成人话收工。``rpc()`` 里那道预检同样拦得住，但那时
+        # 会裹上「控制面调用失败」前缀和 ``（unsupported）`` 尾巴——请求根本
+        # 没出本机，却长得像宿主回的错，反而把排查往错方向带。
+        precheck = rpc_allowlist.check(endpoint, args)
+        if precheck:
+            yield event.plain_result(f"本地拦下：{precheck}")
+            return
+
+        try:
+            info = await self._transport_or_create().rpc(
+                endpoint=endpoint, args=args, raw=True
+            )
+        except BridgeError as exc:
+            # 预检在上面已经拦掉了，走到这里的只剩传输层：
+            # 403 对宿主白名单/签名，404 对桥接地址，其余照实报。
+            if exc.status == 403:
+                yield event.plain_result(
+                    _prefixed_failure(
+                        "控制面调用被拒",
+                        f"{exc}。多半是宿主 allowedRpcMethods 没放行这个端点，"
+                        "或者 hmac_mode 开着而 token 对不上。",
+                    )
+                )
+            elif exc.status == 404:
+                yield event.plain_result(
+                    _prefixed_failure(
+                        "控制面调用失败",
+                        f"{exc}。先确认 bridge_url 指的是桥接端。",
+                    )
+                )
+            else:
+                yield event.plain_result(_prefixed_failure("控制面调用失败", exc))
+        except Exception as exc:  # noqa: BLE001 - 网络类失败同样只提示
+            logger.warning(f"[dsh_relay] 控制面调用失败：{exc}")
+            yield event.plain_result(_prefixed_failure("控制面调用失败", exc))
+        else:
+            headline = _rpc_headline(info)
+            body = json.dumps(info, ensure_ascii=False, indent=2)
+            yield event.plain_result(f"端点：{endpoint}（{headline}）\n{body}")
+
     # ---- 回帖（结构已定型，P1 复用）----------------------------------
 
     async def _reply(self, event: AstrMessageEvent, text: str) -> AsyncIterator[Any]:
@@ -2330,6 +2496,10 @@ def _usage_text(base: str) -> str:
         (
             f"{base} {contract.COMMAND_ADOPT} <会话 id> [工作区 id]",
             "把本对话改指到已有会话（不新建、不删旧的）",
+        ),
+        (
+            f"{base} {contract.COMMAND_RPC} <endpoint> [json]",
+            "直调 DSH 控制面（只读白名单，回显 200 信封，仅管理员）",
         ),
         (
             f"{base} {contract.APPROVAL_COMMAND_APPROVE} <验证码>",

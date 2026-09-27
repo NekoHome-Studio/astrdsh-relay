@@ -13,6 +13,7 @@
  *     **审批 waterfall（approval/request → 4 位一次性 code → POST /approval）**、
  *     **工作区清单与改指（§13：GET /workspaces、POST /session/rebind）**、
  *     **对话中分支（§14：POST /session/fork）**、
+ *     **控制面转发（§11：POST /rpc，加载期白名单 + 网关信封原样透传）**、
  *     卸载期 `cancel → whenIdle → flush → dispose` 收尾。
  *   - 轮转策略已接线（§2.3）：`on-demand` 在 `idleTtlMs` 无活动即归档回收，
  *     `daily` 按宿主本地日期跨日轮转；两者都只归档、不删历史。
@@ -47,6 +48,9 @@ import { newRecord, resolveLocation, renderSessionTitle } from './location.js'
 import { PANEL_ROUTE, buildPanelSnapshot, panelAccessDecision } from './panel.js'
 import { normalizeAnswers, questionError, renderQuestion } from './questions.js'
 import {
+  RPC_DEFAULT_METHODS, RPC_METHOD_COUNT, isKnownRpcMethod, isStreamRpcMethod, wireKeysOf,
+} from './rpc-methods.js'
+import {
   PROACTIVE_SKIP, enqueueBounded, evaluateProactiveGates, isSilentReply,
   localMinutesOfDay, renderProactivePrompt,
 } from './proactive.js'
@@ -71,8 +75,12 @@ const MAX_BODY_BYTES = 1_048_576
 /**
  * 依赖服务。框架会等它们就绪后再跑 apply。
  * 已核实：`dsh-agent-loop` 提供 agents factory，且本机 web profile 已挂载它。
+ *
+ * `typertGateway`（契约 §11 的控制面转发用）已核实由 `@deepseek-ai/dsh-api-gateway`
+ * 以 `@typert service typertGateway` 提供；该行在 dsh-base 的 patch 里叫
+ * `typert-gateway`，web / headless 两个 profile 的 bundles 都含 dsh-base，故必然存在。
  */
-export const inject = ['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry']
+export const inject = ['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry', 'typertGateway']
 
 /**
  * 配置 schema。
@@ -125,6 +133,19 @@ export const Config = Schema.object({
   questionsEnabled: Schema.boolean().default(true),
   questionTimeoutMs: Schema.number().default(300_000),
 
+  // ---- 控制面转发（契约 §11：POST /rpc）----
+  /**
+   * `POST /rpc` 的**方法白名单**。缺省 = A 类 26 条只读方法（见 `lib/rpc-methods.js`）。
+   *
+   * 白名单是权限门，不是加固项（契约 §11.3 第 1 条）：转发等于把整个 `/api` 面
+   * 交给 IM 侧。想开 C 类（`settings/*`、`workspace/archiveSession` 这类写操作）
+   * 必须在这里显式列出——那时候出的事算配置者认下的。
+   *
+   * 值在**加载期**逐条验：拼错的 endpoint、以及流式四类都会让插件加载直接失败，
+   * 而不是变成运行期一句「为什么老说我不许调」。
+   */
+  allowedRpcMethods: Schema.array(Schema.string()).default([...RPC_DEFAULT_METHODS]),
+
   // ---- 输出 ----
   forwardReasoning: Schema.boolean().default(false),
 
@@ -173,6 +194,9 @@ export function apply(ctx, config) {
   // 配置错误要响亮：宁可加载失败，也不要运行期静默降级。
   assertConfigIsUsable(config)
 
+  // 白名单在加载期固化成 Set：一路只读，且判定落在热路径上。
+  const allowedRpcMethods = new Set(config.allowedRpcMethods ?? RPC_DEFAULT_METHODS)
+
   // state 在 apply 阶段就要定妥：路径非法或文件损坏都必须让**插件加载失败**，
   // 而不是等到第一条消息进来才炸（契约 §2.2）。
   const statePath = resolveStatePath(config.statePath)
@@ -180,7 +204,7 @@ export function apply(ctx, config) {
 
   // 这份清单必须与文件顶部的 `inject` 保持一致：子 fiber 解析不到的服务会沿父链
   // 回溯到本插件的 fiber，靠的就是顶层 inject——两处漂移会变成「加载期没事、请求期抛」。
-  ctx.inject(['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry'], (host) => {
+  ctx.inject(['webServer', 'agents', 'sessions', 'sessionQuery', 'agentDefaultModel', 'workspaceRegistry', 'typertGateway'], (host) => {
     const log = host.logger ?? ctx.logger
     const tag = `[${name}]`
 
@@ -535,6 +559,9 @@ export function apply(ctx, config) {
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.REBIND), handler: handleRebind },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.FORK), handler: handleFork },
       { kind: 'exact', path: join(config.pathPrefix, ROUTES.ADOPT), handler: handleAdopt },
+    // 控制面转发（契约 §11）。**权限门在 handleRpc 里**：auth → 签名 → 白名单，
+    // 三道缺一不可——这条路由把整个 host RPC 面带到了 HTTP 上。
+    { kind: 'exact', path: join(config.pathPrefix, ROUTES.RPC), handler: handleRpc },
       // WebUI 面板的只读快照。**刻意用 PANEL_ROUTE 而不是 ROUTES 里的键**：
       // 那张表是 IM↔DSH 协议（要与 contract.py 逐字对齐、进版本协商），
       // 而面板只是 DSH 本机的诊断面，IM 永远不会调它。
@@ -1771,6 +1798,126 @@ export function apply(ctx, config) {
     }
 
     /**
+     * POST /rpc — **控制面转发**（契约 §11）。
+     *
+     * 把整个 host RPC 面带到了 HTTP 上，因此这条路由是全仓最窄的一道门：
+     * auth → 签名 → 白名单，三道缺一不可（`docs/DESIGN.md` §7.3.1 原话：
+     * 「不做就是提权漏洞」）。门开在**这里**而不是路由表里，是因为路由表
+     * 只回答「哪个路径交给谁」，它认不出调用者是谁。
+     *
+     * 转发形状与浏览器 `/api` 逐字段同构：请求体 `{ endpoint, args }`，
+     * 响应**就是**宿主 `dispatchRpc` 的信封 `{ok,value}` / `{ok,error}`。
+     * **业务失败 HTTP 仍是 200**（契约 §11.1）——IM 侧必须判 `ok`，
+     * 只看状态码会把「方法自己报错」读成「调用成功」。这与其余路由
+     * 「4xx 即失败」的直觉相反，是跟着 DSH 网关口径走的，不是为了图省事。
+     *
+     * 三处刻意的拒绝，都写成 400/403 而不是让它冒成 500：
+     *
+     *   1. 端点必须形如 `<namespace>/<method>`（**恰好两段**）。§11.2：
+     *      点号写法 `session.list` 在实机 33/33 全部 404，不得使用。
+     *   2. 未登记进白名单的方法 → **403 `forbidden`**。这是身份已确认、
+     *      权限不够，不是报文格式错；写成 400 会让「谁在试探」淹没在噪声里。
+     *   3. 流式四类 → **403 `forbidden`**（§11.3 第 2 条）。宿主 `invoke()`
+     *      对 `mode === 'stream'` 直接抛，插件侧前置拒绝才不至于变成 500。
+     *
+     * `args` 的 wire 键在这里做**子集**校验。宿主 `assertExactArguments` 会再拦
+     * 一次缺键/多键，但把半成品透传到宿主只会折成 `gateway/internal`——
+     * 那等于把「调用方写错键」伪装成「宿主故障」。两侧不冲突，是前置过滤
+     * 与终局校验的接力。
+     */
+    async function handleRpc(request, response) {
+      if (!authorize(request, response, config)) return
+      const rawBody = await readRawBody(request)
+      if (!verifySignature(request, response, config, rawBody)) return
+      const body = await readJsonBody(request)
+      // 坏 JSON 会退化成 null，**必须在派发前显式拦下**：放着不管，
+      // 等于允许「一个字节都没解析出来」的请求去调一个零参数 RPC。
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '请求体必须是 JSON 对象')
+        return
+      }
+
+      const endpoint = body.endpoint
+      if (typeof endpoint !== 'string' || endpoint.trim() === '') {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '字段 endpoint 必须是非空字符串')
+        return
+      }
+      const segments = endpoint.split('/')
+      if (segments.length !== 2 || segments[0] === '' || segments[1] === '') {
+        writeError(
+          response,
+          ERROR_CODE.UNSUPPORTED,
+          `端点必须形如 <namespace>/<method>，收到 ${JSON.stringify(endpoint)}`,
+        )
+        return
+      }
+      // 加载期已固化成 Set，热路径上不做数组查找。
+      if (!allowedRpcMethods.has(endpoint)) {
+        writeError(response, ERROR_CODE.FORBIDDEN, `方法 ${endpoint} 不在控制面白名单里`)
+        return
+      }
+      if (isStreamRpcMethod(endpoint)) {
+        writeError(
+          response,
+          ERROR_CODE.FORBIDDEN,
+          `方法 ${endpoint} 是流式端点，v1 不暴露（契约 §11.3）`,
+        )
+        return
+      }
+
+      const args = body.args === void 0 || body.args === null ? {} : body.args
+      if (typeof args !== 'object' || Array.isArray(args)) {
+        writeError(response, ERROR_CODE.UNSUPPORTED, '字段 args 必须是 JSON 对象')
+        return
+      }
+      const wireKeys = wireKeysOf(endpoint) ?? []
+      for (const key of Object.keys(args)) {
+        if (!wireKeys.includes(key)) {
+          writeError(
+            response,
+            ERROR_CODE.UNSUPPORTED,
+            `字段 args.${key} 不属于方法 ${endpoint}（允许的键：${wireKeys.join(', ') || '无'}）`,
+          )
+          return
+        }
+      }
+
+      const gateway = host.typertGateway
+      if (typeof gateway?.dispatchRpc !== 'function') {
+        // 照 handleAdopt 的服务缺席写法：这是本进程装错了，不是调用方写错了。
+        writeError(
+          response,
+          ERROR_CODE.INTERNAL,
+          '宿主未提供 typertGateway.dispatchRpc，控制面转发不可用',
+        )
+        return
+      }
+
+      // 进程内直调宿主网关。不必自己拼 `{namespace, method, args, signal}`，
+      // 也不必复刻 `rpcFailure`——`dispatchRpc` 内部就走 `remoteRequest`，
+      // 信封原样透出即与浏览器 `/api` 天然一致。§11.2 之所以选它而不是
+      // 逐方法重建，理由就在这一行。
+      let envelope
+      try {
+        envelope = await gateway.dispatchRpc(endpoint, { args }, request.signal)
+      } catch (error) {
+        // 业务失败会被 dispatchRpc 自己折成 `{ok:false}` 返回，能抛到这里的
+        // 只剩「网关本身不可用」——那仍是 500，不是 403。
+        writeError(
+          response,
+          ERROR_CODE.INTERNAL,
+          `控制面转发失败：${String(error?.message ?? error)}`,
+        )
+        return
+      }
+
+      // 审计行：成功与失败都记。「这个方法是谁转出去的」和「有人试了不该试的
+      // 方法」是同一个问题的两面，而 403 分支已经在上面拦掉了后者。
+      log?.info?.(`${tag} [rpc-audit] ${endpoint} ok=${envelope?.ok === true}`)
+      writeJson(response, 200, envelope)
+    }
+
+    /**
      * GET /panel/status — **WebUI 面板的只读快照**（`docs/WEBUI.md`）。
      *
      * 三条刻意的边界，写在这里免得后来人「顺手」放开：
@@ -2618,6 +2765,27 @@ function assertConfigIsUsable(config) {
   const probe = renderSessionTitle(config.sessionTitleTemplate, 'platform:MessageType:0')
   if (probe.trim() === '') {
     throw new Error('dsh-astrbot-relay: sessionTitleTemplate 渲染结果为空')
+  }
+
+  // 控制面白名单：**加载期**逐条验，绝不留给运行期 403。
+  // 拼错一个方法名若只在调用时 403，排查者看到的是「权限不够」而不是「你写错了」，
+  // 这正是那种会让人白查半天的错。流式四类同理：v1 的 `/rpc` 不暴露流式控制面
+  // （契约 §11.3 第 2 条），写进白名单等于配置自相矛盾。
+  if (!Array.isArray(config.allowedRpcMethods)) {
+    throw new Error('dsh-astrbot-relay: allowedRpcMethods 必须是字符串数组')
+  }
+  for (const endpoint of config.allowedRpcMethods) {
+    if (typeof endpoint !== 'string' || endpoint.trim() === '') {
+      throw new Error(`dsh-astrbot-relay: allowedRpcMethods 里有非法项 ${JSON.stringify(endpoint)}`)
+    }
+    if (!isKnownRpcMethod(endpoint)) {
+      throw new Error(`dsh-astrbot-relay: allowedRpcMethods 里的 ${endpoint} 不在描述符表里`
+        + `（共 ${RPC_METHOD_COUNT} 条，见 lib/rpc-methods.js；注意点号写法与 host.describe / workspace.list / goals/blocked 都不可用）`)
+    }
+    if (isStreamRpcMethod(endpoint)) {
+      throw new Error(`dsh-astrbot-relay: ${endpoint} 是流式方法，v1 的 /rpc 不转发流式控制面`
+        + '（契约 §11.3 第 2 条），请从白名单里去掉')
+    }
   }
 }
 

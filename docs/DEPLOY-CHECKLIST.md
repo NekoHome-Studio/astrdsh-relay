@@ -96,11 +96,21 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 | `pathPrefix` | `/astrbot-relay` | 与 `bridge_url` 的路径段一致；**不要写尾斜杠** |
 | `heartbeatMs` | `15000` | SSE 保活 + **IM 侧算帧间隔阈值的基准**，两侧同口径 |
 | `hmacMode` | `false` | 要请求体签名时开；**两侧必须同开**，否则一侧拒收 |
+| `signatureSkewMs` | `60000` | 只在 `hmacMode: true` 时有意义：允许的签名时间偏移；应 ≥ 两侧时钟最大偏差 |
 | `policy` | `one-to-one` | `one-to-one` / `on-demand` / `daily` 轮转 |
 | `sessionTitleTemplate` | `星驿 · {platform}/{messageType}/{sessionId}` | 反向定位：让 DSH Web 的会话列表里认得出「哪条来自哪个群」 |
 | `approvalTimeoutMs` | `120000` | 应与 IM 侧 `approval_timeout_ms` 一致或略大 |
 | `questionTimeoutMs` | `300000` | 同上，对应 IM 侧 `question_timeout_ms` |
+| `allowedRpcMethods` | 26 条缺省白名单 | 白名单是**整体替换**（见下）。只想放行子集 / 加自定义方法时才写 |
 | `proactiveHeartbeatMs` | `0`（**关**） | 自主心跳。**默认关**，第 6 节才会动它 |
+
+> ⚠️ `allowedRpcMethods` 的两个坑：
+> 1. **整体替换**：写出来的数组直接顶掉缺省 26 条，**schema 默认值不会兜底**，漏写一条
+>    就等于禁掉那个 endpoint（收到 403，不是静默）。要照抄就抄
+>    `dsh-astrbot-relay/lib/rpc-methods.js` 里的 `RPC_DEFAULT_METHODS`，别手打。
+> 2. **流式四类不能进白名单**：`session/control`、`session/follow`、`workspace/follow`、
+>    `workspaceFiles/changes` 写进去会在**加载期**直接抛错（刻意设计：拼错名字不该
+>    伪装成「权限不够」）。
 
 ### 2.3 冒烟：直接问 `/health`
 

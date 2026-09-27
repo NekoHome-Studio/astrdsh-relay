@@ -9,6 +9,7 @@
     "check:syntax": "node scripts/check-syntax.mjs",
     "check:py": "python -m py_compile astrbot_plugin_dsh_relay/contract.py astrbot_plugin_dsh_relay/location_text.py astrbot_plugin_dsh_relay/allowlist.py astrbot_plugin_dsh_relay/heartbeat_state.py astrbot_plugin_dsh_relay/main.py && node -e \"require('fs').rmSync('astrbot_plugin_dsh_relay/__pycache__',{recursive:true,force:true})\"",
     "check:contract": "node scripts/check-contract-parity.mjs",
+    "check:rpc-methods": "node scripts/gen-rpc-methods.mjs --check",
     "check:version": "node scripts/package-release.mjs --check",
     "test:location": "node scripts/test-location.mjs",
     "test:session-title": "node scripts/test-session-title.mjs",
@@ -18,6 +19,7 @@
     "test:proactive-chain": "node scripts/test-proactive-chain.mjs",
     "test:panel": "node scripts/test-panel.mjs",
     "test:panel-chain": "node scripts/test-panel-chain.mjs",
+    "test:rpc-chain": "node scripts/test-rpc-chain.mjs",
     "test:fake-host": "node scripts/test-fake-host.mjs",
     "test:heartbeat-state": "python scripts/test-heartbeat-state.py",
     "test:im-heartbeat": "python scripts/test-im-heartbeat.py",
@@ -26,7 +28,7 @@
     "test:allowlist": "python scripts/test-allowlist.py",
     "verify:bridge": "python scripts/verify-bridge-live.py",
     "test:location-live": "node scripts/test-location-live.mjs",
-    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run test:location && npm run test:location-text && npm run test:allowlist && npm run test:session-title && npm run test:questions && npm run test:fake-host && npm run test:question-chain && npm run test:proactive && npm run test:proactive-chain && npm run test:panel && npm run test:panel-chain && npm run test:heartbeat-state && npm run test:im-heartbeat && npm run test:im-commands && npm run check:version",
+    "test": "npm run check:syntax && npm run check:py && npm run check:contract && npm run check:rpc-methods && npm run test:location && npm run test:location-text && npm run test:allowlist && npm run test:session-title && npm run test:questions && npm run test:fake-host && npm run test:question-chain && npm run test:proactive && npm run test:proactive-chain && npm run test:panel && npm run test:panel-chain && npm run test:rpc-chain && npm run test:heartbeat-state && npm run test:im-heartbeat && npm run test:im-commands && npm run check:version",
     "dist": "node scripts/package-release.mjs"
   }
 }

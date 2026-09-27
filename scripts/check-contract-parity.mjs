@@ -37,9 +37,13 @@ expect('BRIDGE_VERSION', js.BRIDGE_VERSION, py.scalars.get('BRIDGE_VERSION'))
 // v3 起是九条：再补 FORK。
 // 这几条各自对应 IM 侧一条指令——漏在名单外就等于把新端点放进漂移盲区：
 // JS 侧改了路径而 Python 侧没跟上，闸门仍然绿灯。
+// 后来居上的一批（ADOPT / ANSWER / PROACTIVE / RPC）走的是同一份清单，
+// 因此这里必须逐个列全：控制面（§11 的 RPC）恰恰是最不能漂移的一条，
+// 它带着方法白名单，路径写错只会在运行期被宿主的 404 挡下。
 for (const key of [
   'MESSAGE', 'EVENTS', 'APPROVAL', 'HEALTH',
   'WHERE', 'CONVERSATIONS', 'WORKSPACES', 'REBIND', 'FORK',
+  'ADOPT', 'ANSWER', 'PROACTIVE', 'RPC',
 ]) {
   expect(`ROUTES.${key}`, js.ROUTES?.[key], py.scalars.get(`ROUTE_${key}`))
 }

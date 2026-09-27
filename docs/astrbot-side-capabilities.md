@@ -1513,7 +1513,7 @@ API Key 的创建接口：`POST /api/v1/api-keys`（需 `system` scope），见 
 | 本机实际 WebUI | `0.0.0.0:6185`，`enable: true` | `data/cmd_config.json` → `dashboard` 段 |
 | 主配置文件 | `data/cmd_config.json` | `astrbot/core/config/astrbot_config.py:20`：`ASTRBOT_CONFIG_PATH = os.path.join(get_astrbot_data_path(), "cmd_config.json")` |
 | `wake_prefix` | `["/"]` | `data/cmd_config.json` |
-| `admins_id` | `["astrbot", "1000000001"]` | `data/cmd_config.json` |
+| `admins_id` | `["astrbot", "3430088565"]` | `data/cmd_config.json` |
 | `log_level` | `DEBUG`，`log_file_path` = `logs/astrbot.log` | `data/cmd_config.json` |
 | `platform_settings.segmented_reply.enable` | `false` | `data/cmd_config.json`（所以不会自动分段发） |
 | `platform_settings.forward_threshold` | `1500` | `data/cmd_config.json` |
@@ -1521,6 +1521,9 @@ API Key 的创建接口：`POST /api/v1/api-keys`（需 `system` scope），见 
 | `t2i` | `false` | `data/cmd_config.json` |
 | `plugin_set` | `["*"]`（所有插件启用） | `data/cmd_config.json` |
 | `timezone` | `Asia/Shanghai` | `data/cmd_config.json` |
+
+> `admins_id` 这一行同时是 `/dsh rpc` 的权限源：插件里的管理员判定读的就是它
+> （**不是**插件自己的 `_conf_schema.json`），改完必须**重启 AstrBot** 才生效。
 
 ### 6.4 本机 IM 平台实况：**3 个 aiocqhttp 反向 WS，无 telegram**
 

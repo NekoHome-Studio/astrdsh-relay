@@ -61,6 +61,12 @@ ROUTE_ADOPT = "/session/adopt"
 ROUTE_ANSWER = "/answer"
 #: 主动消息发件箱（契约 §18）：自主心跳那一轮若决定说话，就从这里取。
 ROUTE_PROACTIVE = "/proactive"
+#: 控制面转发（契约 §11）：把 ``endpoint`` + ``args`` 原样投给宿主的
+#: ``handleRpc``。它是**只读观景窗**，不是通用后门——放行的 26 条硬镜像宿主
+#: ``allowedRpcMethods`` 缺省值（``rpc_allowlist.py``），白名单外的本地就挡下；
+#: 形状不对 / 缺必填键也在本地拦（同一份表），拦下的话术由 AstrBot 侧出。
+#: 另外指令侧 ``/dsh rpc`` **仅管理员**：白名单收窄的是能读什么，不是谁能读。
+ROUTE_RPC = "/rpc"
 
 #: 下行事件类型。契约 §4。
 EVENT_TURN_START = "turn/start"
@@ -107,6 +113,11 @@ ERROR_NOT_FOUND = "not_found"
 ERROR_QUEUE_FULL = "queue_full"
 ERROR_AGENT_BUSY = "agent_busy"
 ERROR_UNSUPPORTED = "unsupported"
+#: 控制面转发专用（契约 §11.1）：``endpoint`` 形状合法但**不在方法白名单**内。
+#: 与 ``unauthorized``（401）分开：那里是身份不明，这里是身份已确认、权限不够。
+#: 白名单外一律**零派发**——不得先转发再由宿主拒绝，否则等于把整个 ``/api``
+#: 面交给 IM，白名单就退化成装饰。（本插件的本地预检先手就挡，宿主这层是兜底。）
+ERROR_FORBIDDEN = "forbidden"
 ERROR_NOT_IMPLEMENTED = "not_implemented"
 ERROR_INTERNAL = "internal"
 
@@ -151,3 +162,9 @@ COMMAND_FORK = "fork"
 #: 它换的是**映射**（本对话从此指着那个会话），与 ``COMMAND_REBIND`` 换工作区、
 #: ``COMMAND_FORK`` 造新会话都不是一回事，所以三个词各自独立，不互借。
 COMMAND_ADOPT = "adopt"
+
+#: 直调控制面的子命令。同 ``COMMAND_WHERE``，是 AstrBot 侧的 UX 词，
+#: DSH 侧的常量表里没有对应项（那边只有路由 ``/rpc``）。
+#: 它是本文件里**唯一**限管理员身份的指令面入口（判定内联在
+#: ``main.on_bridge_message`` 的 ``COMMAND_RPC`` 分支，原因见那里的注释）。
+COMMAND_RPC = "rpc"

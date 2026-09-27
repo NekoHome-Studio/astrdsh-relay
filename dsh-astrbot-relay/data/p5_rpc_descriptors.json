@@ -1,0 +1,1429 @@
+[
+ {
+  "id": "agentPresets/copy",
+  "ns": "agentPresets",
+  "method": "copy",
+  "service": "agentPresets",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "from",
+    "from"
+   ],
+   [
+    "id",
+    "id"
+   ],
+   [
+    "name",
+    "name"
+   ]
+  ],
+  "loc": "packages/preset/agent-presets/src/index.ts:565"
+ },
+ {
+  "id": "agentPresets/deletePreset",
+  "ns": "agentPresets",
+  "method": "deletePreset",
+  "service": "agentPresets",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "id",
+    "id"
+   ]
+  ],
+  "loc": "packages/preset/agent-presets/src/index.ts:603"
+ },
+ {
+  "id": "agentPresets/list",
+  "ns": "agentPresets",
+  "method": "list",
+  "service": "agentPresets",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/preset/agent-presets/src/index.ts:261"
+ },
+ {
+  "id": "agentPresets/read",
+  "ns": "agentPresets",
+  "method": "read",
+  "service": "agentPresets",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agentPreset",
+    "agentPreset"
+   ]
+  ],
+  "loc": "packages/preset/agent-presets/src/index.ts:513"
+ },
+ {
+  "id": "agentPresets/select",
+  "ns": "agentPresets",
+  "method": "select",
+  "service": "agentPresets",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "agentPreset",
+    "agentPreset"
+   ]
+  ],
+  "loc": "packages/preset/agent-presets/src/index.ts:695"
+ },
+ {
+  "id": "commands/execute",
+  "ns": "commands",
+  "method": "execute",
+  "service": "commands",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "line",
+    "line"
+   ],
+   [
+    "submittedAttachments",
+    "submittedAttachments"
+   ]
+  ],
+  "loc": "packages/interaction/commands/src/index.ts:356"
+ },
+ {
+  "id": "commands/list",
+  "ns": "commands",
+  "method": "list",
+  "service": "commands",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ]
+  ],
+  "loc": "packages/interaction/commands/src/index.ts:310"
+ },
+ {
+  "id": "credentials/describe",
+  "ns": "credentials",
+  "method": "describe",
+  "service": "credentialsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "refs",
+    "refs"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/credentials.ts:83"
+ },
+ {
+  "id": "credentials/set",
+  "ns": "credentials",
+  "method": "set",
+  "service": "credentialsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "ref",
+    "ref"
+   ],
+   [
+    "value",
+    "value"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/credentials.ts:100"
+ },
+ {
+  "id": "credentials/unset",
+  "ns": "credentials",
+  "method": "unset",
+  "service": "credentialsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "ref",
+    "ref"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/credentials.ts:113"
+ },
+ {
+  "id": "settings/canOpenAgentPresetDirectory",
+  "ns": "settings",
+  "method": "canOpenAgentPresetDirectory",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/settings-controller/src/index.ts:131"
+ },
+ {
+  "id": "settings/describe",
+  "ns": "settings",
+  "method": "describe",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/settings-controller/src/index.ts:117"
+ },
+ {
+  "id": "settings/mutate",
+  "ns": "settings",
+  "method": "mutate",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "ns",
+    "ns"
+   ],
+   [
+    "ops",
+    "ops"
+   ],
+   [
+    "expectedRevision",
+    "expectedRevision"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/index.ts:180"
+ },
+ {
+  "id": "settings/openAgentPresetDirectory",
+  "ns": "settings",
+  "method": "openAgentPresetDirectory",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agentPreset",
+    "agentPreset"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/index.ts:226"
+ },
+ {
+  "id": "settings/openSettingsDocument",
+  "ns": "settings",
+  "method": "openSettingsDocument",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/settings-controller/src/index.ts:195"
+ },
+ {
+  "id": "settings/replace",
+  "ns": "settings",
+  "method": "replace",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "ns",
+    "ns"
+   ],
+   [
+    "section",
+    "section"
+   ],
+   [
+    "expectedRevision",
+    "expectedRevision"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/index.ts:161"
+ },
+ {
+  "id": "settings/update",
+  "ns": "settings",
+  "method": "update",
+  "service": "settingsController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "ns",
+    "ns"
+   ],
+   [
+    "patch",
+    "patch"
+   ],
+   [
+    "expectedRevision",
+    "expectedRevision"
+   ]
+  ],
+  "loc": "packages/api/settings-controller/src/index.ts:144"
+ },
+ {
+  "id": "goals/clear",
+  "ns": "goals",
+  "method": "clear",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "ref",
+    "ref"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:433"
+ },
+ {
+  "id": "goals/complete",
+  "ns": "goals",
+  "method": "complete",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "ref",
+    "ref"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:391"
+ },
+ {
+  "id": "goals/create",
+  "ns": "goals",
+  "method": "create",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:647"
+ },
+ {
+  "id": "goals/edit",
+  "ns": "goals",
+  "method": "edit",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "ref",
+    "ref"
+   ],
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:329"
+ },
+ {
+  "id": "goals/get",
+  "ns": "goals",
+  "method": "get",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:277"
+ },
+ {
+  "id": "goals/pause",
+  "ns": "goals",
+  "method": "pause",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "ref",
+    "ref"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:352"
+ },
+ {
+  "id": "goals/resume",
+  "ns": "goals",
+  "method": "resume",
+  "service": "goals",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "ref",
+    "ref"
+   ]
+  ],
+  "loc": "packages/goal/goal/src/index.ts:364"
+ },
+ {
+  "id": "llm/discoverModels",
+  "ns": "llm",
+  "method": "discoverModels",
+  "service": "llm",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "settingsNs",
+    "settingsNs"
+   ],
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/llm/llm/src/index.ts:628"
+ },
+ {
+  "id": "llm/listConfigurableProviders",
+  "ns": "llm",
+  "method": "listConfigurableProviders",
+  "service": "llm",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/llm/llm/src/index.ts:541"
+ },
+ {
+  "id": "llm/listProviders",
+  "ns": "llm",
+  "method": "listProviders",
+  "service": "llm",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/llm/llm/src/index.ts:469"
+ },
+ {
+  "id": "dynamicCordisRunner/getClientCode",
+  "ns": "dynamicCordisRunner",
+  "method": "getClientCode",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "pluginRunId",
+    "pluginRunId"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:384"
+ },
+ {
+  "id": "dynamicCordisRunner/inventory",
+  "ns": "dynamicCordisRunner",
+  "method": "inventory",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:525"
+ },
+ {
+  "id": "dynamicCordisRunner/invoke",
+  "ns": "dynamicCordisRunner",
+  "method": "invoke",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "pluginRunId",
+    "pluginRunId"
+   ],
+   [
+    "method",
+    "method"
+   ],
+   [
+    "args",
+    "args"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:741"
+ },
+ {
+  "id": "dynamicCordisRunner/reportClientGuardFailure",
+  "ns": "dynamicCordisRunner",
+  "method": "reportClientGuardFailure",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "pluginRunId",
+    "pluginRunId"
+   ],
+   [
+    "failure",
+    "failure"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:718"
+ },
+ {
+  "id": "dynamicCordisRunner/reportRenderFailure",
+  "ns": "dynamicCordisRunner",
+  "method": "reportRenderFailure",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "pluginRunId",
+    "pluginRunId"
+   ],
+   [
+    "failure",
+    "failure"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:684"
+ },
+ {
+  "id": "dynamicCordisRunner/resolveInspectQuery",
+  "ns": "dynamicCordisRunner",
+  "method": "resolveInspectQuery",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "requestId",
+    "requestId"
+   ],
+   [
+    "resolution",
+    "resolution"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:511"
+ },
+ {
+  "id": "dynamicCordisRunner/resolveRequestRun",
+  "ns": "dynamicCordisRunner",
+  "method": "resolveRequestRun",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "requestId",
+    "requestId"
+   ],
+   [
+    "resolution",
+    "resolution"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:413"
+ },
+ {
+  "id": "dynamicCordisRunner/runHostHalf",
+  "ns": "dynamicCordisRunner",
+  "method": "runHostHalf",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "packageId",
+    "packageId"
+   ],
+   [
+    "mode",
+    "mode"
+   ],
+   [
+    "requestId",
+    "requestId"
+   ],
+   [
+    "approveFutureVersions",
+    "approveFutureVersions"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:325"
+ },
+ {
+  "id": "dynamicCordisRunner/settleUserRun",
+  "ns": "dynamicCordisRunner",
+  "method": "settleUserRun",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ],
+   [
+    "resolution",
+    "resolution"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:438"
+ },
+ {
+  "id": "dynamicCordisRunner/stopFromPanel",
+  "ns": "dynamicCordisRunner",
+  "method": "stopFromPanel",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:480"
+ },
+ {
+  "id": "dynamicCordisRunner/syncInspectManifest",
+  "ns": "dynamicCordisRunner",
+  "method": "syncInspectManifest",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "providers",
+    "providers"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:498"
+ },
+ {
+  "id": "dynamicCordisRunner/undefineFromPanel",
+  "ns": "dynamicCordisRunner",
+  "method": "undefineFromPanel",
+  "service": "dynamicCordisRunner",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "pluginId",
+    "pluginId"
+   ]
+  ],
+  "loc": "packages/extensions/cordis-host-runner/src/index.ts:227"
+ },
+ {
+  "id": "pluginInventory/list",
+  "ns": "pluginInventory",
+  "method": "list",
+  "service": "pluginInventory",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/host/plugin-inventory/src/index.ts:66"
+ },
+ {
+  "id": "messageFeedback/delete",
+  "ns": "messageFeedback",
+  "method": "delete",
+  "service": "messageFeedback",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/feedback/message-feedback/src/index.ts:207"
+ },
+ {
+  "id": "messageFeedback/list",
+  "ns": "messageFeedback",
+  "method": "list",
+  "service": "messageFeedback",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/feedback/message-feedback/src/index.ts:155"
+ },
+ {
+  "id": "messageFeedback/put",
+  "ns": "messageFeedback",
+  "method": "put",
+  "service": "messageFeedback",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/feedback/message-feedback/src/index.ts:167"
+ },
+ {
+  "id": "sessionFeedback/record",
+  "ns": "sessionFeedback",
+  "method": "record",
+  "service": "sessionFeedback",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/feedback/command-feedback/src/index.ts:101"
+ },
+ {
+  "id": "fileUploads/upload",
+  "ns": "fileUploads",
+  "method": "upload",
+  "service": "fileUploads",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/client/file-upload/src/index.ts:106"
+ },
+ {
+  "id": "sessionReferenceResolver/candidates",
+  "ns": "sessionReferenceResolver",
+  "method": "candidates",
+  "service": "sessionReferenceResolver",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "query",
+    "query"
+   ]
+  ],
+  "loc": "packages/context/session-reference/src/index.ts:274"
+ },
+ {
+  "id": "subagents/interruptByParent",
+  "ns": "subagents",
+  "method": "interruptByParent",
+  "service": "subagents",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "childSessionId",
+    "childSessionId"
+   ],
+   [
+    "parentSessionId",
+    "parentSessionId"
+   ],
+   [
+    "mode",
+    "mode"
+   ]
+  ],
+  "loc": "packages/subagent/subagent/src/index.ts:480"
+ },
+ {
+  "id": "subagents/list",
+  "ns": "subagents",
+  "method": "list",
+  "service": "subagents",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "parentSessionId",
+    "parentSessionId"
+   ]
+  ],
+  "loc": "packages/subagent/subagent/src/index.ts:386"
+ },
+ {
+  "id": "subagents/prompt",
+  "ns": "subagents",
+  "method": "prompt",
+  "service": "subagents",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/subagent/subagent/src/index.ts:413"
+ },
+ {
+  "id": "fileReferences/list",
+  "ns": "fileReferences",
+  "method": "list",
+  "service": "sessionFileReferences",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "agent",
+    "agentId"
+   ],
+   [
+    "query",
+    "query"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/file-references.ts:33"
+ },
+ {
+  "id": "session/attachment",
+  "ns": "session",
+  "method": "attachment",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:357"
+ },
+ {
+  "id": "session/cancel",
+  "ns": "session",
+  "method": "cancel",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:377"
+ },
+ {
+  "id": "session/canOpenWorkspacePath",
+  "ns": "session",
+  "method": "canOpenWorkspacePath",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/session-controller/src/index.ts:272"
+ },
+ {
+  "id": "session/control",
+  "ns": "session",
+  "method": "control",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": true,
+  "params": [],
+  "loc": "packages/api/session-controller/src/index.ts:410"
+ },
+ {
+  "id": "session/create",
+  "ns": "session",
+  "method": "create",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:244"
+ },
+ {
+  "id": "session/follow",
+  "ns": "session",
+  "method": "follow",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": true,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:400"
+ },
+ {
+  "id": "session/fork",
+  "ns": "session",
+  "method": "fork",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:335"
+ },
+ {
+  "id": "session/list",
+  "ns": "session",
+  "method": "list",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "_request",
+    "_request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:223"
+ },
+ {
+  "id": "session/modelCatalog",
+  "ns": "session",
+  "method": "modelCatalog",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/session-controller/src/index.ts:263"
+ },
+ {
+  "id": "session/openWorkspacePath",
+  "ns": "session",
+  "method": "openWorkspacePath",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:293"
+ },
+ {
+  "id": "session/page",
+  "ns": "session",
+  "method": "page",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:388"
+ },
+ {
+  "id": "session/prompt",
+  "ns": "session",
+  "method": "prompt",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:346"
+ },
+ {
+  "id": "session/rename",
+  "ns": "session",
+  "method": "rename",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:325"
+ },
+ {
+  "id": "session/search",
+  "ns": "session",
+  "method": "search",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:234"
+ },
+ {
+  "id": "session/selectModel",
+  "ns": "session",
+  "method": "selectModel",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:254"
+ },
+ {
+  "id": "session/updateQueue",
+  "ns": "session",
+  "method": "updateQueue",
+  "service": "sessionController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/index.ts:367"
+ },
+ {
+  "id": "skills/list",
+  "ns": "skills",
+  "method": "list",
+  "service": "sessionSkillCatalog",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/session-controller/src/skill-catalog.ts:36"
+ },
+ {
+  "id": "directoryPicker/createDirectory",
+  "ns": "directoryPicker",
+  "method": "createDirectory",
+  "service": "directoryPickerController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "path",
+    "path"
+   ],
+   [
+    "name",
+    "name"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/directory-picker.ts:88"
+ },
+ {
+  "id": "directoryPicker/list",
+  "ns": "directoryPicker",
+  "method": "list",
+  "service": "directoryPickerController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "path",
+    "path"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/directory-picker.ts:72"
+ },
+ {
+  "id": "directoryPicker/pick",
+  "ns": "directoryPicker",
+  "method": "pick",
+  "service": "directoryPickerController",
+  "kind": "direct",
+  "stream": false,
+  "params": [],
+  "loc": "packages/api/workspace-controller/src/directory-picker.ts:55"
+ },
+ {
+  "id": "workspace/archiveSession",
+  "ns": "workspace",
+  "method": "archiveSession",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:108"
+ },
+ {
+  "id": "workspace/create",
+  "ns": "workspace",
+  "method": "create",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:58"
+ },
+ {
+  "id": "workspace/delete",
+  "ns": "workspace",
+  "method": "delete",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:78"
+ },
+ {
+  "id": "workspace/follow",
+  "ns": "workspace",
+  "method": "follow",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": true,
+  "params": [],
+  "loc": "packages/api/workspace-controller/src/index.ts:118"
+ },
+ {
+  "id": "workspace/insertBefore",
+  "ns": "workspace",
+  "method": "insertBefore",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:88"
+ },
+ {
+  "id": "workspace/insertSessionBefore",
+  "ns": "workspace",
+  "method": "insertSessionBefore",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:98"
+ },
+ {
+  "id": "workspace/rename",
+  "ns": "workspace",
+  "method": "rename",
+  "service": "workspaceController",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "request",
+    "request"
+   ]
+  ],
+  "loc": "packages/api/workspace-controller/src/index.ts:68"
+ },
+ {
+  "id": "workspaceFiles/changes",
+  "ns": "workspaceFiles",
+  "method": "changes",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": true,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:365"
+ },
+ {
+  "id": "workspaceFiles/list",
+  "ns": "workspaceFiles",
+  "method": "list",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:337"
+ },
+ {
+  "id": "workspaceFiles/read",
+  "ns": "workspaceFiles",
+  "method": "read",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ],
+   [
+    "range",
+    "range"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:232"
+ },
+ {
+  "id": "workspaceFiles/readAll",
+  "ns": "workspaceFiles",
+  "method": "readAll",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:278"
+ },
+ {
+  "id": "workspaceFiles/readBytes",
+  "ns": "workspaceFiles",
+  "method": "readBytes",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ],
+   [
+    "range",
+    "range"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:257"
+ },
+ {
+  "id": "workspaceFiles/readRelated",
+  "ns": "workspaceFiles",
+  "method": "readRelated",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ],
+   [
+    "relativePath",
+    "relativePath"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:300"
+ },
+ {
+  "id": "workspaceFiles/stat",
+  "ns": "workspaceFiles",
+  "method": "stat",
+  "service": "workspaceFiles",
+  "kind": "direct",
+  "stream": false,
+  "params": [
+   [
+    "workspaceFileScope",
+    "workspaceFileScopeId"
+   ],
+   [
+    "path",
+    "path"
+   ]
+  ],
+  "loc": "packages/api/workspace-files/src/index.ts:324"
+ }
+]

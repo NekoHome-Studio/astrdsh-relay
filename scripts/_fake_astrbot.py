@@ -310,6 +310,21 @@ class FakeTransport:
                      workspace_id=workspace_id)
         return self._maybe_raise("adopt") or {"ok": True, "adopted": True}
 
+    async def rpc(self, *, endpoint: str, args: dict, raw: bool = False):
+        """``POST /rpc``：控制面转发。信封与别处**不一样**（成功 ``{ok, value}``）。
+
+        真实传输在失败时抛 ``BridgeError``（业务失败同样走 HTTP 200），所以这里
+        只记录转发内容，结果交给用例用 ``results`` / ``errors`` 摆布——
+        错误码到人话的映射是 IM 侧的责任，也正是 `/rpc` 那批用例要钉的东西。
+
+        ``raw`` 必须与真实签名一致：``/dsh rpc`` 走的是 ``raw=True`` 那条路
+        （业务失败也是 200，信封要原样交出去）。桩少了这个参数，处理器会抛
+        ``TypeError`` 被 ``except Exception`` 吞掉，测试只会看到一句「调用失败」，
+        而真正的病因——桩和真实现漂移了——看不见。签名对齐那条断言就是钉这件事。
+        """
+        self._record("rpc", endpoint=endpoint, args=args, raw=raw)
+        return self._maybe_raise("rpc") or {"ok": True, "value": {"echo": endpoint}}
+
     async def send_message(
         self, *, conversation: str, text: str, message_id: str,
         idempotency_key: str, sender: dict | None = None,
@@ -398,6 +413,7 @@ class FakeEvent:
         user_id: str = "10001",
         nickname: str = "测试用户",
         message_id: str = "m-1",
+        admin: bool = False,
     ) -> None:
         self.message_str = message_str
         self.unified_msg_origin = umo
@@ -408,6 +424,7 @@ class FakeEvent:
         )
         self.private = private
         self.group_id = group_id
+        self.admin = admin
         #: ``event.send()`` 发出去的（流式分片、审批提示……）
         self.sent: list[Result] = []
         #: 调用方 ``yield`` 出去的（最终结果）
@@ -435,6 +452,16 @@ class FakeEvent:
 
     def get_group_id(self) -> str:
         return self.group_id
+
+    def is_admin(self) -> bool:
+        """管理员判定。
+
+        真实框架的 ``AstrMessageEvent.is_admin()`` 读的是全局 ``admins_id``
+        （``data/cmd_config.json``，**不是**插件 schema 里的某个键，也不是
+        ``admins``）。这里退化成构造参数：本层要测的是「门有没有拦下、
+        拦下时有没有说清为什么」，把配置拖进来只会多一处漂移源。
+        """
+        return self.admin
 
     # -- 便捷断言 --
     @property

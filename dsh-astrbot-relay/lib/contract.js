@@ -54,6 +54,7 @@ export const ROUTES = Object.freeze({
   ADOPT: '/session/adopt',          // POST  把某 IM 对话改指到一个**已存在**的会话（契约 §15）
   ANSWER: '/answer',                // POST  回执用户问答（v0.8.5 增量：问答双通道的对侧）
   PROACTIVE: '/proactive',          // GET   拉取主动消息（v6 增量：自主心跳的发件箱）
+  RPC: '/rpc',                      // POST  控制面转发（契约 §11）：按方法白名单中继到宿主 /api
 })
 
 /** 下行事件类型。契约 §4。 */
@@ -80,6 +81,11 @@ export const ERROR_CODE = Object.freeze({
   QUEUE_FULL: 'queue_full',
   AGENT_BUSY: 'agent_busy',
   UNSUPPORTED: 'unsupported',
+  // 控制面转发专用（契约 §11.1）：`endpoint` 形状合法，但**不在方法白名单**内；
+  // 或该 endpoint 属流式四类，必须走 `ctx.typertGateway.stream()`（§11.3）。
+  // 与 unauthorized（401）分开：那里是身份不明，这里是身份已确认、权限不够。
+  // 也与 unsupported（400）分开：请求本身是好的，拒绝理由是「你不许调它」。
+  FORBIDDEN: 'forbidden',
   NOT_IMPLEMENTED: 'not_implemented',
   INTERNAL: 'internal',
 })
@@ -99,6 +105,7 @@ export const ERROR_STATUS = Object.freeze({
   [ERROR_CODE.QUEUE_FULL]: 429,
   [ERROR_CODE.AGENT_BUSY]: 409,
   [ERROR_CODE.UNSUPPORTED]: 400,
+  [ERROR_CODE.FORBIDDEN]: 403,
   [ERROR_CODE.NOT_IMPLEMENTED]: 501,
   [ERROR_CODE.INTERNAL]: 500,
 })

@@ -77,7 +77,7 @@
     "description": "流式回帖",
     "type": "bool",
     "default": true,
-    "hint": "关闭后等 message/final 一次性发送（更省消息条数，但等待期间无反馈）"
+    "hint": "只关中间分片与工具提示（更省消息条数，但等待期间无反馈）；最终回答、审批请求、用户问答、链路告警照发"
   },
   "throttle_ms": {
     "description": "流式合流窗口（毫秒）",

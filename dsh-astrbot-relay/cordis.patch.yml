@@ -18,6 +18,16 @@
         pathPrefix: '/astrbot-relay'
         heartbeatMs: 15000
         eventBufferSize: 512
+        hmacMode: false            # 可选强化（契约 §5.2），两侧需一致
+        signatureSkewMs: 60000     # HMAC 时间窗，仅 hmacMode: true 时生效
+        # ---- 控制面转发白名单（契约 §11.3）----
+        # allowedRpcMethods 的 schema 缺省 = A 类只读 26 条，源见 lib/rpc-methods.js:144。
+        # 本模板**有意不写**该键：放开到哪一类属于部署取值，因人而异。
+        # 要在自己 profile 的 patch 里写时，务必写全整份数组——
+        # profile patch 会「整体替换」本行 config，只写一条不是追加，而是「只许那一条」。
+        # endpoint 拼错、或写进流式四类（session/control 等）会让插件加载期直接失败。
+        # 其它未写出的键（waitTimeoutMs / questions* / proactive* / sessionTitleTemplate 等）
+        # 一律退回 schema 默认值，需要再显式写出。
         # ---- 会话映射 ----
         statePath: ''      # 空 = <DSH_HOME>/astrbot-relay/state.json
         policy: 'one-to-one'   # one-to-one | on-demand | daily

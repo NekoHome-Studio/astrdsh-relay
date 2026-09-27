@@ -14,7 +14,7 @@
 > 契约预留的三项配置也已接线（`hmacMode` / `policy` 的 `on-demand`·`daily` 轮转 /
 > `idleTtlMs` 空闲回收），轮转与回收**只归档不删历史**。
 > v0.8.7 起另有**心跳**：IM 侧的连通性播报（A，固定文案或由对话模型组织措辞）与
-> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.9.2`。
+> DSH 侧的自主心跳（B，默认关）。最新发布：`v0.9.4`。
 
 ## 交付物地图
 
@@ -91,12 +91,15 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 | `/dsh rebind <工作区 id>` | 把本对话改指到指定工作区（新开会话，旧的不删） |
 | `/dsh fork [轮次序号]` | 把本对话已完成的轮次前缀复制成新会话（旧的不动） |
 | `/dsh adopt <会话 id> [工作区 id]` | 把本对话改指到一个已存在的会话（目标会话不动，也不建新会话） |
+| `/dsh rpc <namespace/method> [JSON 参数]` | 直调 DSH 控制面并回显整封 HTTP 200 信封（不投给 agent）。**只读**：本地白名单镜像宿主 `allowedRpcMethods` 缺省值，白名单外、形状不对、缺必填键都在本地拦下；**仅管理员**，判定依赖 AstrBot 全局 `admins_id` |
 | `/dsh approve <验证码>` | 允许一次待审批操作 |
 | `/dsh reject <验证码>` | 拒绝待审批操作 |
 
-指令面**刻意只有这九条**（v0.8.0 口径）：`workspaces`（列工作区）与 `rebind`（改指）
+指令面**刻意只有这十条**：`workspaces`（列工作区）与 `rebind`（改指）
 随 v0.5.0 落地，`fork`（分支）随 v0.6.0 落地，`adopt`（认领已存在会话）随 v0.8.0
-落地；`session`（切换）与 `settings` 这类入口
+落地，`rpc`（控制面只读转发，**仅管理员**）随后落地——它吃的是 AstrBot 的全局
+`admins_id`（`data/cmd_config.json`），**不是**本插件 `_conf_schema.json` 里的键，
+改完必须重启 AstrBot 才生效；`session`（切换）与 `settings` 这类入口
 **仍不在本版**，也不在插件侧自行重造——宿主已有既有语义（换工作区是
 `sessionController.create` 的 `workspaceId` 参数 + `workspace.attachSession`，分支是
 `sessionController.fork` 的 `atSeq`），要用就直接进程内调，不另立一套。
