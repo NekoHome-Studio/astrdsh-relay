@@ -310,7 +310,7 @@ class FakeTransport:
                      workspace_id=workspace_id)
         return self._maybe_raise("adopt") or {"ok": True, "adopted": True}
 
-    async def rpc(self, *, endpoint: str, args: dict, raw: bool = False):
+    async def rpc(self, *, endpoint: str, args: dict | None = None, raw: bool = False):
         """``POST /rpc``：控制面转发。信封与别处**不一样**（成功 ``{ok, value}``）。
 
         真实传输在失败时抛 ``BridgeError``（业务失败同样走 HTTP 200），所以这里
@@ -321,6 +321,10 @@ class FakeTransport:
         （业务失败也是 200，信封要原样交出去）。桩少了这个参数，处理器会抛
         ``TypeError`` 被 ``except Exception`` 吞掉，测试只会看到一句「调用失败」，
         而真正的病因——桩和真实现漂移了——看不见。签名对齐那条断言就是钉这件事。
+
+        ``args`` 同理，默认值也得对齐（真实现可省）。桩写成必填时，省略参数的
+        调用点只在桩里炸，真实现那边安静——这类「同名但必填性不同」的漂移
+        名字+种类那条断言看不见，靠下面那条必填性断言兜。
         """
         self._record("rpc", endpoint=endpoint, args=args, raw=raw)
         return self._maybe_raise("rpc") or {"ok": True, "value": {"echo": endpoint}}

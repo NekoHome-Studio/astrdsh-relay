@@ -77,6 +77,20 @@ def _() -> None:
             f"{name} 的参数与真实传输不一致：\n  真 {strip(real)}\n  假 {strip(fake)}"
         )
 
+        # 第二条：**必填性**（有没有默认值）也要对齐。只有名字对齐不够——
+        # 实测把桩的 `sender: dict | None = None` 改成 `= {}`，所有用例照样全绿；
+        # 真实 `rpc.args` 可省、桩却写成必填，也是这么静默漂了很久。
+        # 类型注解**故意不比**：`dict` / `list` 省掉泛型参数不影响运行，不算漂移
+        # （现存 `sender` / `answers` / `args` 三处就是这类，只记录不拦）。
+        required = lambda sig: {
+            p.name: p.default is inspect.Parameter.empty
+            for p in sig.parameters.values() if p.name != "self"
+        }
+        assert required(real) == required(fake), (
+            f"{name} 的必填性（有无默认值）与真实传输不一致："
+            f"\n  真 {required(real)}\n  假 {required(fake)}"
+        )
+
 
 section("指令分发：前缀、白名单、接管标记")
 
