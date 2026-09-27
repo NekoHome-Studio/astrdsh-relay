@@ -28,7 +28,7 @@ import {
   cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
   writeFileSync,
 } from 'node:fs'
-import { deflateRawSync } from 'node:zlib'
+import { deflateRawSync, gunzipSync } from 'node:zlib'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // 契约版本与路由表从唯一真相副本读取，发布说明不再手写字面量（v0.8.1 修：此前硬写 3）。
@@ -143,6 +143,42 @@ const tgzBuilt = join(DSH_DIR, tgzName)
 if (!existsSync(tgzBuilt)) fail(`npm pack 未生成 ${tgzName}`)
 renameSync(tgzBuilt, join(DIST, tgzName))
 ok(`DSH 产物：${tgzName}`)
+
+// --- 断言：tarball 不许夹带备份文件 ---
+// v0.9.5 踩过一次：files 里的 "lib" 是**目录级**包含，lib/contract.js.bak_before_*
+// 就跟着进了包；.gitignore 只挡 git，挡不住 npm pack。这里解 tar 头逐条核对，
+// 让「打包漏网」在本地出包时立刻暴露，而不是等用户解包才发现。
+const tgzEntries = tarEntryNames(join(DIST, tgzName))
+// 备份/临时文件的面相：.bak、.bak_20260927、.bak-old、.orig、.rej、.tmp、.old、编辑器尾随 ~
+const BACKUP_NAME = /\.(bak|orig|rej|tmp|swp|old)\w*$|~$/i
+const bakInTgz = tgzEntries.filter((name) => BACKUP_NAME.test(name))
+if (bakInTgz.length) {
+  fail(
+    `DSH 产物混入备份文件：${bakInTgz.join('、')}
+` +
+    '  多半是 files 把整个目录收了（目录级白名单不会自动跳过 .bak）。',
+  )
+}
+ok(`DSH 产物内无备份文件（${tgzEntries.length} 个条目）`)
+
+/**
+ * 读出 tgz 的条目名：只解 gzip、顺着头块走，不落盘也不依赖 tar 库。
+ * tar 头定长 512 字节——名字在 0..100，八进制字节数在 124..136。
+ */
+function tarEntryNames(tgzPath) {
+  const buf = gunzipSync(readFileSync(tgzPath))
+  const names = []
+  for (let off = 0; off + 512 <= buf.length;) {
+    const head = buf.subarray(off, off + 512)
+    const name = head.toString('utf8', 0, 100).replace(/\0[\s\S]*$/, '')
+    if (!name) break
+    names.push(name)
+    const octal = head.toString('utf8', 124, 136).replace(/\0[\s\S]*$/, '').trim()
+    const size = Number.parseInt(octal, 8) || 0
+    off += 512 + Math.ceil(size / 512) * 512
+  }
+  return names
+}
 
 // --- AstrBot 侧：先做 staging 副本再打 zip ---
 // 归档根目录必须叫 astrbot_plugin_dsh_relay，用户解压到 data/plugins/ 才直接可用。
