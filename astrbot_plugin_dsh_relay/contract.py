@@ -35,7 +35,26 @@ from __future__ import annotations
 #:     v5 的 IM 不会去调 ``/proactive``，DSH 侧的 ``online`` 闸门于是永远不开，
 #:     自主心跳（B）永远不会触发，且没有任何报错。递增版本号是为了把这种半死状态
 #:     换成启动期的一条明确报错。**没有**新增错误码。
-BRIDGE_VERSION = "6"
+#:
+#: v7：``POST /message`` 新增可选键 ``images``（契约 §3.1），图片经附件服务入库后
+#:     以 ``ImageBlock`` 走在正文之前。对 v6 客户端是纯增量，但**仍要递增**：
+#:     图片一进来，请求体上限就从常量变成了按部署附件配置反推的值
+#:     （``maxMessageImageBytes * 4/3 + 1 MiB``，网桥自设硬顶 64 MiB）。
+#:     同一个 ``/message`` 路由在不同版本下可发的字节数不同，这种事必须能被
+#:     启动期拦下来。**没有**新增顶层错误码：图片准入失败用
+#:     ``ImageAdmissionErrorCode``——恰 **9** 个（``dsh-attachment/lib/types/error.js``
+#:     的 ``IMAGE_ADMISSION_ERROR_CODES``），走既有的 ``unsupported``（400）/
+#:     ``internal``（500）两档（§8.1）。同包另 8 个非图码（attachment 总码 17 个）
+#:     不参与图片分档，别把两者混算。
+BRIDGE_VERSION = "7"
+
+#: ``POST /message`` 的 ``images[].mediaType`` 闭集（契约 §3.1）。
+#: 与 DSH 侧 ``dsh-attachment`` 的 ``ImageMediaType`` 逐字对应，只有这四种：
+#: **必须带 ``image/`` 前缀**——``dsh-attachment-local`` 把前缀白名单与字节嗅探
+#: 结果做**严格相等**比对，写 ``"png"`` 会当场吃 ``IMAGE_TYPE_MISMATCH``。
+#: 附件服务的准入闸门只认它们，别的格式（bmp/tiff/heic…）必须在**本端**转码、
+#: 或者明确告诉用户「这张没能上路」——静默丢图会让用户以为模型没看懂。
+IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 
 #: 路由。契约 §3。相对 AstrBot 侧配置项 ``bridge_url``。
 ROUTE_MESSAGE = "/message"

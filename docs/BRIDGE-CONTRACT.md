@@ -1,6 +1,6 @@
 # AstrDsh Relay（星驿）接口契约（草案 / 冻结候选）
 
-> 状态：**设计冻结候选**；当前 `bridgeVersion = "6"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
+> 状态：**设计冻结候选**；当前 `bridgeVersion = "7"`（版本口径见 §10）。所有标记 `【已证实】` 的条项来自两侧源码实读（证据见
 > `docs/astrbot-side-capabilities.md`、`docs/dsh-side-capabilities.md`）；
 > 标记 `【未核实】` 的条项**不得**在实现阶段当作既成事实使用。
 >
@@ -109,7 +109,10 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
   "text": "帮我看下这个报错",
   "messageId": "1000000001-8821",     // IM 侧消息 id，仅用于日志与去重辅助
   "sender": { "id": "1000000001", "name": "user" },
-  "meta": { "platform": "aiocqhttp", "messageType": "GroupMessage" }
+  "meta": { "platform": "aiocqhttp", "messageType": "GroupMessage" },
+  "images": [                          // 可选（v7 起）。缺省 / null / [] 都表示不带图
+    { "mediaType": "image/png", "data": "<canonical base64>", "name": "screenshot.png" }
+  ]
 }
 ```
 
@@ -130,6 +133,58 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 - 若该 conversation 队列已满 → `429`（见 §6.3）。
 - 若 DSH 侧尚无该 conversation 的映射，**由服务端按 `policy` 创建**，
   IM 侧不负责建会话。
+
+**`images[]`（v7 起，可选）** —— 本条消息携带的图片，经 DSH 侧附件服务入库后以
+`ImageBlock` 走在正文**之前**。字段与形状：
+
+- 形状：`{ mediaType: string, data: string, name?: string }`。
+- `mediaType` 是**闭集**，只有 `image/png` / `image/jpeg` / `image/webp` / `image/gif`
+  四种，**带 `image/` 前缀**（`ImageMediaType`）。前缀不是纸面约定而是硬判据：附件服务
+  拿这份白名单与**字节嗅探**结果做严格相等比对，写 `"png"` 一律吃 `IMAGE_TYPE_MISMATCH`
+  （`unsupported`，400）——少一个 `image/` 就是上线即炸。别的格式
+  （bmp / tiff / heic…）必须在 IM 侧转码，或明确告诉用户「这张没能上路」——
+  **静默丢图**会让用户以为模型没看懂。
+- `data` 是 canonical base64（不带 `data:` 前缀）。
+- `name` 只用于展示，**永不**解释为路径。
+- 缺省、`null`、`[]` 三种写法等价：都表示「本条消息不带图」，**不构成「有图」**。
+- `text` 与 `images` **不能同时为空**（`unsupported`，400）；只带图不带文字是合法的。
+- 网桥**只校验形状**，不判张数 / 单图字节 / 聚合字节 / mediaType 合规——那些限额属于
+  部署配置（`attachment-local` 可调），网桥硬编码就必然和实配打架。形状不合时**整条请求
+  被拒**，错误串逐项点名：
+
+| 情况 | 错误串 |
+|---|---|
+| 不是数组 | `images 必须是数组` |
+| 元素不是对象 | `images[i] 必须是对象 { mediaType, data, name? }` |
+| `mediaType` 缺失或非字符串 | `images[i].mediaType 必填且必须是字符串` |
+| `data` 缺失或非字符串 | `images[i].data 必填且必须是 canonical base64 字符串` |
+| `name` 非字符串 | `images[i].name 必须是字符串（仅展示，不会被当路径解释）` |
+
+- 请求体上限见 §3.1.1：图片在 wire 上是 base64，这类请求可发的字节数比纯文本多。
+
+#### 3.1.1 请求体上限（v7 起）
+
+纯文本时代 `/message` 的上限是个常量：1 MiB（`MAX_BODY_BYTES`）。图片进来之后，
+这个数字**不再是常量**，而是按部署反推的：
+
+```
+limit = max(1 MiB, min(64 MiB, ceil(maxMessageImageBytes * 4 / 3) + 1 MiB))
+```
+
+- `maxMessageImageBytes` 从附件服务读（`ctx.get('attachments').imageLimits`），也就是
+  部署里 `attachment-local` 那一行的实配；读不到（未挂附件服务）就退回 1 MiB。
+- `* 4/3` 是因为图片在 wire 上是 canonical base64；`+ 1 MiB` 是给 `conversation` /
+  `text` / 键名引号留的余量（`IMAGE_BODY_HEADROOM_BYTES`）。这个反推口径与官方前端的
+  `assertImageBodyCapacity` 一致——**别自己发明一个**。
+- `64 MiB`（`IMAGE_BODY_CEILING_BYTES`）是网桥自设的硬顶：`readRawBody` 会把整份请求体
+  **缓存进内存**，照 `attachment-local` 默认的 200 MiB 聚合上限反推会得到 266 MiB 的缓冲，
+  等于给自己开一个内存放大面。64 MiB ≈ 三张 20 MiB 原图；再大就明确报错，而不是把进程吃满。
+- 上限是**上限**，不是承诺：把部署调大只在这条链路的两侧都跟着动时才有意义。
+  **两侧不要各写死一个数**——IM 侧若按 1 MiB 预检，调大了的部署照样发不出图。
+
+请求体超限（或读流失败）时网桥在 request 上记 `RAW_BODY_REJECTED`（`lib/index.js`），
+由调用方组织文案。**不要把超限混进 400 的语义**：一个是「太大」，一个是「形状不对」；
+混在一起会让用户收到一条指向错误方向的报错。
 
 ### 3.2 `GET /events?conversation=<umo>` — SSE 下行通道
 
@@ -171,7 +226,7 @@ charset=utf-8`。未知字段必须忽略（前向兼容）；未知的 `type` �
 ```jsonc
 {
   "ok": true,
-  "bridgeVersion": "6",
+  "bridgeVersion": "7",
   "uptimeMs": 123456,
   "conversations": 3,
   "pending": [{ "conversation": "…", "attaching": false, "queue": 0, "approvals": 0, "questions": 0, "stuckAt": 0 }],
@@ -411,7 +466,7 @@ DSH 内 agent 触发敏感工具
 
 ## 10. 版本协商
 
-- 契约版本号 `bridgeVersion = "6"`，随每次破坏性变更递增。
+- 契约版本号 `bridgeVersion = "7"`，随每次破坏性变更递增。
 - `/health` 返回 `bridgeVersion`；IM 侧启动时校验，不等则拒绝启用。
 - 契约内新增**可选**字段不递增版本（归入前向兼容规则）；新增事件 `type`
   不递增（客户端忽略未知 `type`）；修改既有字段语义**必须**递增。
@@ -453,6 +508,18 @@ DSH 内 agent 触发敏感工具
   `heartbeatMs` 而拿到一个与服务端不同口径的阈值。这正是最糟的失败形态：没有报错、
   没有日志异常，只有「功能像没装」。版本号在这里换来的不是兼容性保护（旧版本来也不会坏），
   而是**把半死状态变成启动期的一条明确报错**。代价照旧：**v5 与 v6 不能混合部署**。
+- **v6 → v7 是「同一个路由，可发的字节数变了」的一次。** §3.1 的 `POST /message` 新增
+  **可选**键 `images[]`（v0.9.5 图片输入链路，图片经附件服务入库后以 `ImageBlock` 走在
+  正文之前）。按「老客户端会不会坏」的口径，可选键是纯增量：v6 的 IM 不会带 `images`，
+  服务端拿到 `undefined` 就当没有，行为与 v6 完全一致——**它不会坏**。升版的理由在别处：
+  图片一进来，`/message` 的请求体上限就从常量 1 MiB（`MAX_BODY_BYTES`）变成**按部署的
+  附件配置反推**的值（§3.1.1）。同一个路由在 v6 与 v7 下能收的字节数不同，而这个差别
+  既不在字段上、也不在路由表上，光比对常量表看不出来。它必须能被启动期拦下来：v6 的 IM
+  若按自己那 1 MiB 预算拦图，用户看到的是「图发不出去」而不是「版本不一致」，排查方向
+  会被带到错误的层。§3.1.1 同时写明上限是**上限**：调大只在部署的附件限额也跟着调大时
+  才有意义，网桥在这之上另有 64 MiB 硬顶。**没有**新增顶层错误码——图片准入失败用附件包
+  自己的 `ImageAdmissionErrorCode`（恰 9 个），走既有的 `unsupported`（400）/ `internal`
+  （500）两档（§8.1）。代价照旧：**v6 与 v7 不能混合部署**。
 
 ---
 

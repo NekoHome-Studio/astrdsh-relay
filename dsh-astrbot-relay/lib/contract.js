@@ -37,8 +37,35 @@ import { randomUUID } from 'node:crypto'
  *     v5 的 IM 不会去调 `/proactive`，DSH 侧的 `online` 闸门于是永远不开，
  *     自主心跳（B）永远不会触发，且没有任何报错。递增版本号是为了把这种半死状态
  *     换成启动期的一条明确报错。**没有**新增错误码。
+ *
+ * v7：`POST /message` 请求体新增**可选** `images[]`（契约 §3.1）：
+ *     `{mediaType, data, name?}`，`mediaType` 闭集 `image/png|image/jpeg|image/webp|image/gif`，
+ *     `data` 是**裸 base64**（不带 `data:` 前缀），不传或传 `[]` 与 v6 完全等价。
+ *     按「老客户端会不会坏」的口径这是纯增量，但**不升版会静默丢图**：
+ *     v6 的 DSH 侧不认识这个键，用户发的图会被当纯文本投递（不报错、不提示）。
+ *     递增版本号是为了把「图悄悄没了」换成启动期的一条明确报错。
+ *     图准入失败沿用既有分档（`unsupported` 400 / `internal` 500），
+ *     判据是 `ImageAdmissionErrorCode`——**恰 9 个**（`dsh-attachment/lib/types/error.js`
+ *     的 `IMAGE_ADMISSION_ERROR_CODES`）。同包 `ATTACHMENT_ERROR_CODES` 共 17 个，
+ *     是「9 个图码 + 8 个非图码」，**别把两者混算**。**没有**新增路由。
  */
-export const BRIDGE_VERSION = '6'
+export const BRIDGE_VERSION = '7'
+
+/**
+ * `POST /message` 请求体里 `images[].mediaType` 的闭集（契约 §3.1）。
+ *
+ * 与 DSH 侧 `dsh-attachment` 的 `ImageMediaType` 逐字对应，只有这四种。
+ * **值必须带 `image/` 前缀**——`dsh-attachment-local` 是拿这份白名单与
+ * 字节嗅探结果做**严格相等**比对的，写 `"png"` 会当场吃 `IMAGE_TYPE_MISMATCH`。
+ * 其余格式（bmp/tiff/heic…）附件服务一律不收，IM 侧要么在本端转码、
+ * 要么明确告诉用户「这张没能上路」，静默丢图会让用户以为模型没看懂。
+ */
+export const IMAGE_MEDIA_TYPES = Object.freeze([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+])
 
 /** 路由。契约 §3。相对基址（AstrBot 侧配置项 bridge_url）。 */
 export const ROUTES = Object.freeze({

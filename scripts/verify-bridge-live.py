@@ -120,7 +120,7 @@ def main() -> int:
               "401 ⇒ 两侧 token 不一致；注意 AstrBot 侧改完配置文件必须**重载插件**才会生效")
     elif status == 200:
         check(f"GET {path_prefix}/health → 200", True)
-        check("bridgeVersion 是 6", str(payload.get("bridgeVersion")) == "6",
+        check("bridgeVersion 是 7", str(payload.get("bridgeVersion")) == "7",
               f"实际 {payload.get('bridgeVersion')!r}")
         check("pathPrefix 与 patch 一致", payload.get("pathPrefix") == path_prefix,
               f"实际 {payload.get('pathPrefix')!r}")

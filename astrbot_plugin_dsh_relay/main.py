@@ -524,6 +524,7 @@ class BridgeTransport:
         message_id: str,
         idempotency_key: str,
         sender: dict[str, Any] | None = None,
+        images: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """``POST /message``。返回 ``{"accepted": bool, "duplicate": bool, ...}``。
 
@@ -543,6 +544,10 @@ class BridgeTransport:
             "sender": sender or {"id": "", "name": ""},
             "meta": self._meta_of(conversation),
         }
+        if images:
+            # 空数组与不传在协议上等价：没有图就干脆别出现这个键，
+            # 桥接端也就不会在日志里多打一行「0 张图」。
+            body["images"] = images
         attempts = max(1, self._int("retry_max_attempts", 5))
         max_delay = max(0.0, self._int("retry_max_delay_ms", 30000) / 1000.0)
         delay = 1.0
@@ -811,6 +816,127 @@ class BridgeTransport:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 图片输入（契约 §3.1 的 ``images[]``）
+# ──────────────────────────────────────────────────────────────────────
+
+#: 嗅探出的 MIME → 线上 ``mediaType``。闭集只有这四个：``dsh-attachment`` 的
+#: ``ImageMediaType`` 就这四个，本端 ``contract.IMAGE_MEDIA_TYPES`` 是它的镜像。
+#: 下游判据是**严格相等**（``attachment-local`` 拿前缀白名单比字节嗅探结果），
+#: 所以值**带 ``image/`` 前缀**；不带前缀会吃 ``IMAGE_TYPE_MISMATCH``。
+#: AstrBot 自己嗅探得出来的 ``image/bmp`` / ``image/tiff`` / ``image/avif``
+#: 附件服务一律不收——本端**不转码**：悄悄转一手会让用户看到的图和模型看到的
+#: 不一致，而且会不会转得动还取决于本机 PIL 的编解码器。宁可明确报一声。
+_IMAGE_MEDIA_TYPE_BY_MIME: dict[str, str] = {
+    "image/png": "image/png",
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",  # 非标准写法，但确实有平台会直接给
+    "image/webp": "image/webp",
+    "image/gif": "image/gif",
+}
+
+
+def _is_image_component(component: Any) -> bool:
+    """是不是图片组件。延迟导入：与本文件既有的 ``Plain`` / ``Image`` 用法一致。"""
+    try:
+        from astrbot.api.message_components import Image
+    except Exception:  # noqa: BLE001 - 组件模块缺席不该让整条消息发不出去
+        Image = None  # type: ignore[assignment]
+    if Image is not None and isinstance(component, Image):
+        return True
+    return type(component).__name__ == "Image"
+
+
+def _has_image_component(event: AstrMessageEvent) -> bool:
+    """本条消息里有没有图——用来给「裸前缀」判定破例：带了图就不是裸前缀。
+
+    ``event.message_str`` 只看得见文本，图挂在 ``message_obj.message`` 的组件链上，
+    所以这里必须走组件链。取不到链就当没有图，退化成旧行为（回指令清单）。
+    """
+    try:
+        chain = list(getattr(event.message_obj, "message", None) or [])
+    except Exception:  # noqa: BLE001 - 组件链形态不固定，读失败不该让整条消息作废
+        return False
+    return any(_is_image_component(component) for component in chain)
+
+
+def _media_type_of(mime_type: Any) -> str | None:
+    """MIME → ``mediaType``；不在闭集里返回 ``None``（调用方报错，**不静默丢**）。
+
+    落表之后再拿 ``contract.IMAGE_MEDIA_TYPES`` 校一遍：本表是手抄的，抄漏一格
+    的后果是发一张 DSH 侧必然拒收的图；让契约文件当唯一真源，漂移当场暴露。
+    """
+    head = str(mime_type or "").strip().lower().split(";", 1)[0]
+    media_type = _IMAGE_MEDIA_TYPE_BY_MIME.get(head)
+    if media_type is None or media_type not in contract.IMAGE_MEDIA_TYPES:
+        return None
+    return media_type
+
+
+async def _collect_image_inputs(event: AstrMessageEvent) -> tuple[list[dict[str, str]], list[str]]:
+    """把本条消息里的图片抽成 ``images[]``，返回 ``(images, failures)``。
+
+    ``failures`` 是逐张失败的中文短句：**每一张没上路的图都要有一句交代**。
+    静默丢图比报错更坏——用户以为模型看过了，模型却在凭空回答。
+
+    两个都为空时调用方**不传** ``images`` 键：空数组与不传在协议上等价，
+    少一个键就少一处能和 DSH 侧打架的地方。
+
+    引用一律走 ``Image.url or Image.file``：``Image`` 的四种构造器（URL / 文件 /
+    base64 / bytes）最后都落到这两个字段之一（``components.py:501-634``），
+    自己去猜 ``base64://`` ``file://`` 前缀只会漏掉一半形态。解析交给
+    ``resolve_image_ref_to_base64_data(strict=False)``：它顺手把 MIME **真嗅探**
+    好了（PIL 看字节，不是按扩展名），坏图返回 ``None`` 而不是抛异常。
+
+    本函数**保证不抛**：抽图失败只该让这一条消息少几张图，不该让它发不出去。
+    """
+    try:
+        message_obj = getattr(event, "message_obj", None)
+        chain = list(getattr(message_obj, "message", None) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[dsh_relay] 读取消息链失败，本次按无图处理：{exc}")
+        return [], []
+
+    refs = [component for component in chain if _is_image_component(component)]
+    if not refs:
+        return [], []
+
+    try:
+        from astrbot.core.utils.media_utils import resolve_image_ref_to_base64_data
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[dsh_relay] 取图组件不可用：{exc}")
+        return [], [f"这条消息里有 {len(refs)} 张图，但本端取图组件不可用，这次只发了文字。"]
+
+    images: list[dict[str, str]] = []
+    failures: list[str] = []
+    total = len(refs)
+    for index, component in enumerate(refs, start=1):
+        label = f"第 {index}/{total} 张图" if total > 1 else "这张图"
+        ref = str(
+            getattr(component, "url", "") or getattr(component, "file", "") or ""
+        ).strip()
+        if not ref:
+            failures.append(f"{label}没有可读取的来源，没能一起发过去。")
+            continue
+        try:
+            resolved = await resolve_image_ref_to_base64_data(ref, strict=False)
+        except Exception as exc:  # noqa: BLE001 - 单张图失败不影响其余张
+            logger.warning(f"[dsh_relay] 图片解析异常（{ref[:64]}）：{exc}")
+            resolved = None
+        if resolved is None or not resolved.base64_data:
+            failures.append(f"{label}读不出来（格式不支持或来源已失效），没能一起发过去。")
+            continue
+        media_type = _media_type_of(resolved.mime_type)
+        if media_type is None:
+            got = str(resolved.mime_type or "未知格式")
+            failures.append(f"{label}是 {got}，只能收 png/jpeg/webp/gif，没能一起发过去。")
+            continue
+        # 不带 ``name``：DSH 侧它是可选的，而本端能拿到的候选名不是本地路径就是
+        # 一长串 base64，前者会泄露宿主目录结构，后者进了日志更难读。
+        images.append({"mediaType": media_type, "data": resolved.base64_data})
+    return images, failures
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 插件主体
 # ──────────────────────────────────────────────────────────────────────
 
@@ -974,8 +1100,13 @@ class Main(Star):
 
         prefix_base = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
         command = tail.strip()
+        # 先取词头：command 可能是空串，直接 split(...)[0] 会 IndexError。
+        head = command.split(maxsplit=1)[0].lower() if command else ""
         # 裸前缀与 ``help`` 走同一份清单：少一个入口，就少一处会和实现漂移的文案。
-        if not command or command.split(maxsplit=1)[0].lower() == contract.COMMAND_HELP:
+        # ★ v0.9.5：判据里必须先问一句「这条消息带图吗」——契约 §3.1 允许 text 为空、
+        # 只靠 images 投递，而「裸前缀 + 一张图」在文本面上和裸前缀长得一模一样；
+        # 按旧写法会直接回清单，图连网桥都没出（2026-09-27 实测翻车）。
+        if head == contract.COMMAND_HELP or (not head and not _has_image_component(event)):
             yield event.plain_result(_usage_text(prefix_base))
             # 三处「已接管」分支都必须显式禁止默认 LLM：handler 结束后
             # star_request 会 clear_result()，只剩 stop_event 的话
@@ -985,7 +1116,7 @@ class Main(Star):
             event.stop_event()  # 必须在 yield 之后
             return
 
-        head = command.split(maxsplit=1)[0].lower()
+        # 词头 head 已在上面算好（command 可能为空串，不能在这里再 split 一次）。
 
         # 定位：只读诊断，不投给 agent。
         if head == contract.COMMAND_WHERE:
@@ -1064,6 +1195,11 @@ class Main(Star):
 
         # 命中后接管本事件：传 True 才是"禁止默认 LLM"
         event.should_call_llm(True)
+        # ★ 2026-09-27：标记这是网桥的输出，TTS/表情插件据此不配音、不贴图
+        try:
+            event.set_extra("_dsh_relay", True)
+        except Exception:
+            pass
 
         async for result in self._handle_task(event, command):
             yield result
@@ -1111,6 +1247,12 @@ class Main(Star):
                     yield event.plain_result("桥接端事件流未在预期时间内建立，本次未投递。")
                     return
 
+                images, image_failures = await _collect_image_inputs(event)
+                if image_failures:
+                    # 有图没上路就先把话说明白：用户以为模型看过了才是最坏的情况。
+                    # 提示完继续投递——一张坏图不该让剩下的图和正文一起作废。
+                    yield event.plain_result("（图片提示）" + "；".join(image_failures))
+
                 try:
                     reply = await transport.send_message(
                         conversation=conversation,
@@ -1118,6 +1260,7 @@ class Main(Star):
                         message_id=str(getattr(event.message_obj, "message_id", "") or ""),
                         idempotency_key=idempotency_key,
                         sender=self._sender_of(event),
+                        images=images,
                     )
                 except BridgeError as exc:
                     logger.warning(f"[dsh_relay] 投递失败：{exc}")
@@ -1205,6 +1348,11 @@ class Main(Star):
                 await event.send(event.plain_result("（链路抖动，中间有内容丢失）"))
                 continue
 
+            # ★ 每帧重打标记：让「已经在跑的旧任务」也立刻停止被配音/贴图
+            try:
+                event.set_extra("_dsh_relay", True)
+            except Exception:
+                pass
             if kind == contract.EVENT_TURN_START:
                 continue
 

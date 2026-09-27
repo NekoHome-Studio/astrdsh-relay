@@ -250,7 +250,7 @@ class FakeTransport:
         self.results: dict[str, object] = {}
         self.errors: dict[str, Exception] = {}
 
-        self.health_result: dict[str, object] = {"bridgeVersion": 6, "heartbeatMs": 15000}
+        self.health_result: dict[str, object] = {"bridgeVersion": 7, "heartbeatMs": 15000}
         self.health_error: Exception | None = None
         self.proactive_items: list[dict[str, object]] = []
         self.proactive_cursor = 0
@@ -328,9 +328,14 @@ class FakeTransport:
     async def send_message(
         self, *, conversation: str, text: str, message_id: str,
         idempotency_key: str, sender: dict | None = None,
+        images: list[dict[str, str]] | None = None,
     ):
+        #: ``images`` 是 v0.9.5 图片输入链路的上行口。桩少一个参数，处理器就会在
+        #: ``await transport.send_message(...)`` 处抛 TypeError，被那条宽泛的
+        #: ``except Exception`` 收成「投递失败」——又是桩自己造的假象（签名对齐断言同责）。
         self._record("send_message", conversation=conversation, text=text,
-                     message_id=message_id, idempotency_key=idempotency_key, sender=sender)
+                     message_id=message_id, idempotency_key=idempotency_key,
+                     sender=sender, images=list(images or []))
         return self._maybe_raise("send_message") or {"ok": True, "duplicate": False}
 
     def connection_signal(self, conversation: str) -> asyncio.Event:

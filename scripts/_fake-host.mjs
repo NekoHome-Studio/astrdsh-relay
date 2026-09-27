@@ -37,7 +37,7 @@ export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const PLUGIN_DIR = join(ROOT, 'dsh-astrbot-relay')
 
 /**
- * 四个被桩掉的宿主机依赖。
+ * 五个被桩掉的宿主机依赖（`dsh-attachment` 是 v0.9.5 图片输入链路新增的)。
  *
  * 桩的 schemastery 刻意保留 `__shape`（真包没有它）——测试要的就是「能物化出
  * schema 默认值」这件事本身；真伪差异由 `materializeDefaults` 的强校验兜住。
@@ -61,6 +61,28 @@ export default { object, string: chain, number: chain, boolean: chain, union: ch
   'dsh-brand': `export const brandString = (value) => value\n`,
   'dsh-agent': `export const installModelSelection = () => {}\n`,
   'dsh-llm': `export const createUserMessage = (input) => ({ ...input, role: 'user' })\n`,
+  // 这一个只保留 code 分流所需的最小面：9 个 admission 码与真实包
+  // （dsh-attachment/lib/types/error.js）逐字一致，绝不在这里自造码。
+  // v0.9.5 起 lib/index.js 顶部 import 了它，缺桩会让副本 import 直接炸。
+  'dsh-attachment': `export const IMAGE_ADMISSION_ERROR_CODES = [
+  'TOO_MANY_IMAGES',
+  'IMAGES_TOO_LARGE',
+  'UNSUPPORTED_IMAGE_TYPE',
+  'INVALID_IMAGE_BASE64',
+  'INVALID_IMAGE',
+  'IMAGE_TYPE_MISMATCH',
+  'IMAGE_TOO_LARGE',
+  'IMAGE_TOO_MANY_PIXELS',
+  'IMAGE_DIMENSION_TOO_LARGE',
+]
+const ADMISSION = new Set(IMAGE_ADMISSION_ERROR_CODES)
+export function isImageAdmissionError(error) {
+  return error instanceof Error && typeof error.code === 'string' && ADMISSION.has(error.code)
+}
+export function admitEncodedImages(attachments, images) {
+  return attachments.saveImages(images)
+}
+`,
 }
 
 function writeStubs(pkgDir) {

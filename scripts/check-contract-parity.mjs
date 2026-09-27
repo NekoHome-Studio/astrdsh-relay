@@ -67,13 +67,26 @@ expect('APPROVAL_OUTCOME.ALLOW_ONCE', jsOutcomes.ALLOW_ONCE, py.scalars.get('APP
 expect('APPROVAL_OUTCOME.REJECTED', jsOutcomes.REJECTED, py.scalars.get('APPROVAL_REJECTED'))
 compareSets('APPROVAL_OUTCOMES_ALLOWED', Object.values(jsOutcomes), py.sets.get('APPROVAL_OUTCOMES_ALLOWED'))
 
+// ── 6. 图准入闭集（v0.9.5 增量）────────────────────────────────────
+// 这枚常量此前处在**校验盲区**：下面的 Python 解析器只认 `NAME = "str"` 与
+// `frozenset({...})`，没有 tuple 分支，于是有人把它写成 `"png"` 也能全绿——
+// 而它在 DSH 侧是拿去做**严格相等**比对的，写 `"png"` 当场吃 `IMAGE_TYPE_MISMATCH`
+// （400，unsupported），本地自检全绿、上线即炸。加这个分支就是为了把
+// 「本地全绿 + 线上必炸」这种最贵的失败提前到 CI。
+compareSequences('IMAGE_MEDIA_TYPES', js.IMAGE_MEDIA_TYPES, py.sequences.get('IMAGE_MEDIA_TYPES'))
+
+// 光比两侧常量还不够：真正决定线上行为的是 AstrBot 侧那张 MIME 映射表的**值**。
+// 而那张表的错法与常量一模一样（两边一起漏前缀，所以互相印证着都「对」），
+// 因此这里直接读 main.py，把映射表的值逐个数出来确认都在闭集内。
+checkImageMimeMap(js.IMAGE_MEDIA_TYPES)
+
 // ── 结果 ──────────────────────────────────────────────────────────
 if (problems.length) {
   console.error('✗ 两侧契约常量不一致：\n')
   for (const line of problems) console.error(`  - ${line}`)
   console.error(
-    '\n  请同步修改 dsh-astrbot-relay/lib/contract.js 与' +
-    ' astrbot_plugin_dsh_relay/contract.py，必要时更新 docs/BRIDGE-CONTRACT.md。',
+    '\n  请同步修改 dsh-astrbot-relay/lib/contract.js、astrbot_plugin_dsh_relay/contract.py' +
+    '（图相关的还有同目录 main.py 的 _IMAGE_MEDIA_TYPE_BY_MIME），必要时更新 docs/BRIDGE-CONTRACT.md。',
   )
   process.exit(1)
 }
@@ -81,7 +94,8 @@ if (problems.length) {
 console.log(
   `✓ 契约常量一致：BRIDGE_VERSION=${js.BRIDGE_VERSION}，` +
   `${Object.keys(jsEvents).length} 个事件类型，${Object.keys(jsErrors).length} 个错误码，` +
-  `${Object.keys(js.ROUTES ?? {}).length} 条路由`,
+  `${Object.keys(js.ROUTES ?? {}).length} 条路由，` +
+  `${(js.IMAGE_MEDIA_TYPES ?? []).length} 种图片 mediaType`,
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -109,6 +123,68 @@ function compareSets(label, jsValues, pyValues) {
 }
 
 /**
+ * 顺序敏感的对照组：用在**有序**常量上（例如闭集元组）。
+ * 与 compareSets 的差别只在「顺序不同也算不一致」——元组的顺序本身没有语义，
+ * 但两侧既然都写成有序形态，就顺手把顺序也钉住，省得有人只在一边重排。
+ */
+function compareSequences(label, jsValues, pyValues) {
+  if (!jsValues?.length || !pyValues) {
+    problems.push(`${label}：一侧缺失（JS=${show(jsValues)}，PY=${show(pyValues)}）`)
+    return
+  }
+  const a = jsValues.map(String)
+  if (a.join('|') === pyValues.join('|')) return
+  const onlyJs = a.filter((v) => !pyValues.includes(v))
+  const onlyPy = pyValues.filter((v) => !a.includes(v))
+  if (onlyJs.length) problems.push(`${label}：仅 JS 有 ${onlyJs.map(show).join('、')}`)
+  if (onlyPy.length) problems.push(`${label}：仅 Python 有 ${onlyPy.map(show).join('、')}`)
+  if (!onlyJs.length && !onlyPy.length) {
+    problems.push(`${label}：元素相同但顺序不同（JS=${a.join('、')} / PY=${pyValues.join('、')}）`)
+  }
+}
+
+/**
+ * 核对 AstrBot 侧 `main.py` 的 MIME → `mediaType` 映射表。
+ *
+ * 这张表是**实际发车的那一站**：常量写对了但表里漏写前缀，线上照样吃
+ * `IMAGE_TYPE_MISMATCH`。所以不能只比常量。
+ */
+function checkImageMimeMap(closedSet) {
+  const path = join(ROOT, 'astrbot_plugin_dsh_relay', 'main.py')
+  let src
+  try {
+    src = readFileSync(path, 'utf8')
+  } catch {
+    problems.push('main.py：读不到文件（路径变了？）')
+    return
+  }
+  const block = src.match(/_IMAGE_MEDIA_TYPE_BY_MIME[\s\S]*?\{([\s\S]*?)\n\}/)
+  if (!block) {
+    problems.push('main.py：解析不到 _IMAGE_MEDIA_TYPE_BY_MIME 映射表')
+    return
+  }
+  const pairs = [...block[1].matchAll(/"([^"\n]*)"\s*:\s*"([^"\n]*)"/g)].map((m) => [m[1], m[2]])
+  if (!pairs.length) {
+    problems.push('main.py：映射表里一个键值对都没解析出来（形态变了？）')
+    return
+  }
+  for (const [mime, mediaType] of pairs) {
+    if (!closedSet.includes(mediaType)) {
+      problems.push(`main.py 映射表：${mime} → ${show(mediaType)} 不在闭集内`)
+    }
+    if (mediaType !== mime && !/^image\//.test(mediaType)) {
+      problems.push(`main.py 映射表：${mime} 的值 ${show(mediaType)} 少了 image/ 前缀`)
+    }
+  }
+  // 值全合法也可能漏行：少一整行不报错，但那一类图从此静默地发不出去。
+  const covered = new Set(pairs.map(([, value]) => value))
+  const uncovered = closedSet.filter((type) => !covered.has(type))
+  if (uncovered.length) {
+    problems.push(`main.py 映射表：没有任何一条能产出 ${uncovered.map(show).join('、')}`)
+  }
+}
+
+/**
  * ⚠️ 必须是**函数声明**，不能写成 const 箭头函数：
  * 上面第 40 行起就在顶层调用 expect()，而 expect() 在「一侧缺失」时会用到
  * show()。写成 const 会踩 TDZ——即**唯独在契约真的不一致时**脚本崩溃，
@@ -121,15 +197,18 @@ function show(value) {
 /**
  * 极简 Python 常量解析器。
  *
- * 只认本仓库 contract.py 里出现的两种形态：
+ * 只认本仓库 contract.py 里出现的三种形态：
  *   NAME = "字面量"
  *   NAME = frozenset({ A, B, ... })      // 可跨行，元素是标识符
+ *   NAME = ("字面量", "字面量", ...)      // 可跨行，有序元组（如 IMAGE_MEDIA_TYPES）
  * 这是一个**刻意**不通用的小解析器：契约副本的形态由我们自己控制，
- * 用真 Python 解析器会引入对 python 可执行文件的依赖。
+ * 用真 Python 解析器会引入对 python 可执行文件的依赖，
+ * 而闸门必须能被任何一台只装了 node 的机器跑起来。
  */
 function parsePython(path) {
   const scalars = new Map()
   const sets = new Map()
+  const sequences = new Map()
   const lines = readFileSync(path, 'utf8').split(/\r?\n/)
 
   for (let i = 0; i < lines.length; i++) {
@@ -140,6 +219,18 @@ function parsePython(path) {
     const literal = raw.match(/^"([^"]*)"$/) ?? raw.match(/^'([^']*)'$/)
     if (literal) {
       scalars.set(name, literal[1])
+      continue
+    }
+
+    // 有序元组：元素是字符串字面量（不是标识符——闭集要能与文档逐字对照）。
+    if (/^\(\s*["']/.test(raw)) {
+      let body = raw
+      while (!/\)\s*$/.test(body) && i + 1 < lines.length) {
+        body += ` ${lines[++i]}`
+      }
+      const inner = body.replace(/^\s*\(/, '').replace(/\)\s*$/, '')
+      const values = [...inner.matchAll(/"([^"]*)"|'([^']*)'/g)].map((mm) => mm[1] ?? mm[2])
+      sequences.set(name, values)
       continue
     }
 
@@ -171,5 +262,5 @@ function parsePython(path) {
     }
   }
 
-  return { scalars, sets: resolved }
+  return { scalars, sets: resolved, sequences }
 }

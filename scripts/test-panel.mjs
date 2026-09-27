@@ -64,7 +64,7 @@ test('Origin 不是合法 URL ⇒ 403 而不是抛出去', () => {
 console.log('\nbuildPanelSnapshot')
 const NOW = 1_700_000_000_000
 const snapshot = buildPanelSnapshot({
-  bridgeVersion: '6',
+  bridgeVersion: '7',
   uptimeMs: 1234,
   pathPrefix: '/astrbot-relay',
   policy: 'one-to-one',

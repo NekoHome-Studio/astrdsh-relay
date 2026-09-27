@@ -473,7 +473,36 @@ ${preRelease}> ⚠️ **P1 + P2 全链路已打通；契约预留的三项配置
 > 目录后，三个 chain 测试仍是 15/9/13 全绿**——那正是修复前的触发条件。
 > 本版产品码 \`lib/\` **零改动**，\`BRIDGE_VERSION\` 仍是 \`6\`。
 >
-> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.8.7 起是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
+> **v0.9.5 新增：图片输入链路（AstrBot → DSH 方向抽图）**。IM 侧从消息链抽 \`Image\` 组件 →
+> 读盘/下载转 **canonical base64** → 随 \`POST /message\` 一起上行，wire 形状为
+> \`images: [{ type: 'image', mediaType, data, name? }]\`（\`Buffer.from(d,'base64').toString('base64') !== d\` 即拒，
+> 空串同样拒）；网桥侧**自己**调 \`ctx.attachments.saveImage()\` 拿 \`ImageAttachmentRef\`，拼成
+> \`ImageBlock\` **前置**进 \`createUserMessage\` 的 content（图在前、文在后，与宿主提升顺序一致），
+> 再走原来的 \`agent.followup()\` 投递——幂等 / 背压 / attaching / SSE 顺序**一个字都没动**。
+> **只发图不打字是正常用法**（\`text\` 允许为空，只有「两者同时为空」才拒）。
+> \`attachments\` 是**可选能力**：不写进 \`inject\`，拿不到附件服务时只拒图片、纯文本照跑。
+> 请求体上限**按路由给**：\`/message\` 从 1 MiB 抬到
+> \`max(1 MiB, min(64 MiB, ⌈聚合图片字节 × 4/3⌉ + 余量 MiB))\`，其余路由维持 1 MiB——
+> 否则第一张 1080p JPEG 的 base64 就会撞墙。准入闭集 \`image/png\` · \`image/jpeg\` ·
+> \`image/webp\` · \`image/gif\`（bmp/tiff/heic **一律不收且不静默丢图**）；**值必须带 \`image/\` 前缀**，
+> 它与字节嗅探做**严格相等**比对，写成 \`"png"\` 必吃 \`IMAGE_TYPE_MISMATCH\`——
+> 这正是本地自检全绿、上线即炸的那一类失败。9 个 admission 错误码按
+> 「形状类 → \`unsupported\` 400 / 入库失败 → \`internal\` 500」映射。校验层面：
+> \`check-contract-parity.mjs\` 新增第五节「图准入闭集」，把 \`contract.js\` 与 \`contract.py\` 的
+> \`IMAGE_MEDIA_TYPES\` **同值同序**钉死，并核 \`main.py\` 的 \`_IMAGE_MEDIA_TYPE_BY_MIME\`
+> 值落在闭集内、四类图**全覆盖**（少一整行也报红）。
+>
+> **随本版一并修掉的两处「桩漂移」**（本地全绿、真机失败的隐形来源）：
+> 一是 \`scripts/_fake-host.mjs\` 里**没有** \`@deepseek-ai/dsh-attachment\` 桩，而 \`lib/index.js\` 顶部已
+> \`import { admitEncodedImages, isImageAdmissionError }\`，导致 \`npm test\` 直接 RC=1——已补桩，
+> 桩内 9 个 admission 码与真包**逐字一致**并注明来源文件，禁止自造码；二是
+> \`scripts/_fake_astrbot.py\` 的 \`FakeTransport.send_message\` 缺 \`images\` 关键字（真 \`BridgeTransport\`
+> 早有此参），\`await send_message(..., images=...)\` 抛 \`TypeError\` 后被宽泛 \`except\` 收成
+> 「投递失败：unexpected keyword argument 'images'」——**假象由桩自己造**，已补参并记进 \`_record\`。
+>
+> **两侧必须配对**：本版 \`BRIDGE_VERSION=${BRIDGE_VERSION}\`（v0.9.5 起是 \`7\`、
+> v0.8.7–v0.9.4 是 \`6\`、v0.8.5–v0.8.6 是 \`5\`、v0.8.0–v0.8.4 是 \`4\`、v0.6.x–v0.7.x 是 \`3\`、
+> v0.5.x 是 \`2\`、v0.4.x 是 \`1\`）。AstrBot 侧启动时校验
 > \`GET /health\` 的 \`bridgeVersion\`，不匹配**拒绝启用**，所以两边要一起升。
 
 ## 产物

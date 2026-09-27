@@ -40,6 +40,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { admitEncodedImages, isImageAdmissionError } from '@deepseek-ai/dsh-attachment'
 import {
   BRIDGE_VERSION, ROUTES, ERROR_CODE, ERROR_STATUS, POLICY,
   APPROVAL_CODE_LENGTH, APPROVAL_OUTCOME, APPROVAL_OUTCOME_ALLOWED, EVENT, newSessionId,
@@ -69,8 +70,74 @@ export const name = 'dsh-astrbot-relay'
  */
 const RAW_BODY = Symbol('dsh-astrbot-relay.rawBody')
 
+/** 请求体超限（或读流失败）时记在 request 上，好让调用方把文案说准。 */
+const RAW_BODY_REJECTED = Symbol('dsh-astrbot-relay.rawBodyRejectedAt')
+
 /** 请求体上限：IM 文本消息不该超过 1 MiB，超了直接掐断。 */
 const MAX_BODY_BYTES = 1_048_576
+
+/**
+ * 图片消息的请求体上限（v0.9.5）。
+ *
+ * 图片在 wire 上是 canonical base64，字节膨胀 4/3，外面还要装
+ * `conversation` / `text` / 键名引号。官方前端就是这么**反推**的
+ * （`dsh-client-connection` 的 `assertImageBodyCapacity`）：
+ * `ceil(maxMessageImageBytes * 4/3) + 1 MiB`。
+ * 聚合上限本身不在这里硬编码，运行时从 `ctx.get('attachments').imageLimits` 读，
+ * 部署把 `attachment-local` 调大调小，网桥自动跟随；读不到（未挂附件服务）
+ * 就退回纯文本的 1 MiB。
+ */
+const IMAGE_BODY_HEADROOM_BYTES = 1_048_576
+
+/**
+ * 网桥自己的硬顶。`readRawBody` 是**整份缓存进内存**的，照 attachment-local
+ * 默认的 200 MiB 聚合上限反推会得到 266 MiB 的缓冲，等于给自己开一个内存放大面。
+ * 64 MiB ≈ 三张 20 MiB 原图，单张 20 MiB 图一定进得来（26.7 MiB base64 + 余量）；
+ * 再大就明确报错，而不是把进程吃满。
+ */
+const IMAGE_BODY_CEILING_BYTES = 67_108_864
+
+/** 按附件服务的实配反推 `/message` 的请求体上限（读不到就退回文本上限）。 */
+function imageBodyBudget(host) {
+  let limits
+  try { limits = host.get('attachments')?.imageLimits } catch { limits = undefined }
+  const aggregate = Number(limits?.maxMessageImageBytes)
+  if (!Number.isFinite(aggregate) || aggregate <= 0) return MAX_BODY_BYTES
+  const needed = Math.ceil(aggregate * 4 / 3) + IMAGE_BODY_HEADROOM_BYTES
+  return Math.max(MAX_BODY_BYTES, Math.min(IMAGE_BODY_CEILING_BYTES, needed))
+}
+
+/**
+ * 把 wire 上的 `images` 收成 `EncodedImageAttachment[]`（v0.9.5）。
+ *
+ * 只做**形状**校验：是不是数组、字段在不在、类型对不对。
+ * 张数 / 单图字节 / 聚合字节 / mediaType 白名单 / base64 是否 canonical
+ * 一律交给附件服务自己判 —— 那些限额属于部署配置（`attachment-local` 可调），
+ * 网桥硬编码就必然和部署实配打架。`name` 只用于展示，**永不**解释为路径。
+ */
+function readImageInputs(value) {
+  if (value === undefined || value === null) return { images: [] }
+  if (!Array.isArray(value)) return { error: 'images 必须是数组' }
+  const images = []
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index]
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { error: `images[${index}] 必须是对象 { mediaType, data, name? }` }
+    }
+    const { mediaType, data, name } = item
+    if (typeof mediaType !== 'string' || mediaType === '') {
+      return { error: `images[${index}].mediaType 必填且必须是字符串` }
+    }
+    if (typeof data !== 'string') {
+      return { error: `images[${index}].data 必填且必须是 canonical base64 字符串` }
+    }
+    if (name !== undefined && typeof name !== 'string') {
+      return { error: `images[${index}].name 必须是字符串（仅展示，不会被当路径解释）` }
+    }
+    images.push(name === undefined ? { mediaType, data } : { mediaType, data, name })
+  }
+  return { images }
+}
 
 /**
  * 依赖服务。框架会等它们就绪后再跑 apply。
@@ -339,9 +406,10 @@ export function apply(ctx, config) {
 
     /**
      * 读**原始**请求体。只读一次，原文缓存到 request 上（见 RAW_BODY 的说明）。
-     * 超 1 MiB 直接掐断（IM 文本消息不该这么大）；读失败返回 null。
+     * 上限由调用方给：纯文本路由 1 MiB（IM 文本消息不该这么大），
+     * `/message` 走 `imageBodyBudget()` 反推出的图片预算（v0.9.5）；读失败返回 null。
      */
-    function readRawBody(request) {
+    function readRawBody(request, limitBytes = MAX_BODY_BYTES) {
       if (request[RAW_BODY] !== undefined) return Promise.resolve(request[RAW_BODY])
       return new Promise((resolve) => {
         let settled = false
@@ -355,7 +423,8 @@ export function apply(ctx, config) {
         let size = 0
         request.on('data', (chunk) => {
           size += chunk.length
-          if (size > MAX_BODY_BYTES) {
+          if (size > limitBytes) {
+            request[RAW_BODY_REJECTED] = limitBytes
             request.destroy()
             done(null)
             return
@@ -1369,15 +1438,26 @@ export function apply(ctx, config) {
     async function handleMessage(request, response) {
       if (!authorize(request, response, config)) return
 
+      // 请求体上限按附件服务的实配反推（v0.9.5）：图片是 base64，1 MiB 装不下。
+      const bodyLimit = imageBodyBudget(host)
+
       // 签名校验必须先拿到**原文**：readRawBody 只消费一次并缓存，
       // 下面的 readJsonBody 命中同一份缓存，不会二次读流。
-      const rawBody = await readRawBody(request)
+      const rawBody = await readRawBody(request, bodyLimit)
       if (!verifySignature(request, response, config, rawBody)) return
 
       const key = headerOf(request, 'idempotency-key')
       if (!key || !UUID_V4.test(key)) {
         writeError(response, ERROR_CODE.UNSUPPORTED,
           'Idempotency-Key 必填且必须是 UUIDv4（契约 §3.1）')
+        return
+      }
+      // 读体被掐断要单独说：不然会掉进下面的「请求体必须是合法 JSON 对象」，
+      // 图片超限时那句文案会把人带偏。
+      if (rawBody === null) {
+        idempotencyForget(key)
+        writeError(response, ERROR_CODE.UNSUPPORTED,
+          `请求体读取失败或超过上限 ${bodyLimit} 字节（图片按 base64 计）`)
         return
       }
 
@@ -1409,19 +1489,61 @@ export function apply(ctx, config) {
       }
       const conversation = typeof body.conversation === 'string' ? body.conversation.trim() : ''
       const text = typeof body.text === 'string' ? body.text : ''
+      // v0.9.5：这里只收形状，限额与 base64 判据交给附件服务（见 readImageInputs）。
+      const imageInput = readImageInputs(body.images)
+      if (imageInput.error) {
+        idempotencyForget(key)
+        writeError(response, ERROR_CODE.UNSUPPORTED, imageInput.error)
+        return
+      }
+      const imageInputs = imageInput.images
       if (!conversation) {
         idempotencyForget(key)
         writeError(response, ERROR_CODE.UNSUPPORTED, '缺少 conversation（IM 会话键，形如 default:GroupMessage:1000000001）')
         return
       }
-      if (text.trim() === '') {
+      // v0.9.5：纯图片也要能投进来，所以判据从「text 非空」放宽成「text 与 images 同空才拒」。
+      if (text.trim() === '' && imageInputs.length === 0) {
         idempotencyForget(key)
-        writeError(response, ERROR_CODE.UNSUPPORTED, 'text 不能为空')
+        writeError(response, ERROR_CODE.UNSUPPORTED, 'text 与 images 不能同时为空')
         return
       }
       // 解析出会话键后回填标记，好让并发的那一封的 409 里带上 conversation。
       const pendingEntry = idempotency.get(key)
       if (pendingEntry) pendingEntry.conversation = conversation
+
+      // v0.9.5 图片入库：把 base64 换成人可引用的 `ImageAttachmentRef`，只在这里换一次手。
+      // 排在背压之前 —— 入库是 IO，不该占着会话的在途额度等它。
+      let imageBlocks = []
+      if (imageInputs.length > 0) {
+        // 取 store 的姿势照官方主流：`ctx.get('attachments')` + 显式判空；
+        // 刻意**不**写进 inject —— 图片是可选能力，没挂附件服务的部署仍能跑纯文本。
+        let attachments
+        try { attachments = host.get('attachments') } catch { attachments = undefined }
+        if (!attachments) {
+          idempotencyForget(key)
+          writeError(response, ERROR_CODE.INTERNAL,
+            '本部署未挂载 attachments 服务，无法接收图片')
+          return
+        }
+        try {
+          const refs = await admitEncodedImages(attachments, imageInputs)
+          imageBlocks = refs.map((attachment) => ({ type: 'image', attachment }))
+        } catch (error) {
+          idempotencyForget(key)
+          // 按 code 分流（`instanceof` 跨包不可靠）：9 个 ImageAdmissionErrorCode
+          // 都属于「调用方可纠正」→ 400；其余（存储/损坏）→ 500。
+          // 不新增顶层错误码，ERROR_STATUS 闸门不动。
+          if (isImageAdmissionError(error)) {
+            writeError(response, ERROR_CODE.UNSUPPORTED,
+              `图片未被接受：${error.code}（${String(error?.message ?? '')}）`)
+          } else {
+            writeError(response, ERROR_CODE.INTERNAL,
+              `图片入库失败：${String(error?.message ?? error)}`)
+          }
+          return
+        }
+      }
 
       const bridge = bridgeOf(conversation)
       const maxQueued = Math.max(1, Math.trunc(config.maxQueuedPerConversation))
@@ -1598,7 +1720,10 @@ export function apply(ctx, config) {
         writeSessionTitle(bridge)
 
         bridge.agent.followup(createUserMessage({
-          content: [{ type: 'text', text }],
+          // v0.9.5：图在**前**、文在**后**（契约 §3.1）。纯图消息不带 text 块，
+          // 纯文本消息保持原样 —— 顺序由 AstrBot 侧的图片组件位置决定的意义止于 wire，
+          // 这里只保证「图不夹在文本中间」这一条稳定契约。
+          content: [...imageBlocks, ...(text.trim() === '' ? [] : [{ type: 'text', text }])],
           source: { kind: 'user' },
         }))
 
