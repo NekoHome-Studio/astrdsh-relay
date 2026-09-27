@@ -26,7 +26,6 @@
 | `docs/astrbot-side-capabilities.md` | AstrBot 侧 API 核实报告（1889 行，逐条证据）。 |
 | `docs/connector-surface.md` | 既有 connector 的**能力面清点**（替代方案的验收基线 + 迁移三分类）。 |
 | `docs/control-plane-transport.md` | 控制面传输可行性调研：能否在进程内调用/转发 DSH host RPC（决定替代成本）。 |
-| `.probe/probe-api.mjs` | 控制面调研的可复现**只读**探针脚本（自签 cookie 走 33 个 endpoint，验证点号写法全 404、斜杠写法 200）。 |
 | `docs/evidence/` | 实跑固化证据（`dsh --profile web --dump-config` 的实际层组合输出）。 |
 | `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js` / `lib/proactive.js`，十二个端点全部落地）。 |
 | `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十二个方法全部实现）。 |

@@ -510,7 +510,11 @@ requestRejection(request) {
 
 ---
 
-## 2. 实机探针（可复现）
+## 2. 实机探针（历史记录）
+
+> 注：本节的方法与输出是 v0.2.x 时期的实跑记录。探针脚本 `.probe/probe-api.mjs` 已在 v0.3.5 的仓库清理中移除（`185d9b1`，commit 说明原文「清理 .probe 探针与 `__pycache__`」），`README.md` 交付物地图中的对应条目已同步删除。
+> 证据价值不变——结论仍被 §4.2 沿用；若要重跑，按 2.1 的算法描述（自签 cookie → `POST /api/<endpoint>`）自行重建脚本即可，下面 2.2 / 2.3 的输出是当时的原始逐行记录。
+> 同类先例：`astrbot-side-capabilities.md:7` 的一次性脚本 `_probe_db.py` 同样已在收尾时删除，只留证据。
 
 ### 2.1 方法
 
