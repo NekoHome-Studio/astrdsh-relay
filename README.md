@@ -38,7 +38,6 @@
 | `scripts/verify-bridge-live.py` | **重启后的一键验收**（`npm run verify:bridge`）：路由挂没挂、`bridgeVersion`、鉴权是否 fail-closed、`state.json` 是否已生成。需要活的桥，**不进 `npm test`**。 |
 | `scripts/test-location-live.mjs` | **定位能力实测**（`npm run test:location-live`）：正向/反向定位、映射集合、不同会话集 —— 读会话存档比对 `session/title` 事件，不是看接口自说自话。 |
 | `.github/workflows/` | CI（语法 + 契约一致性 + 版本闸门 + 打包冒烟）与 Release（tag 触发自动发版）。 |
-| `AstrBot插件开发指南总结.md` | 社区整理的 AstrBot 插件开发指南（参考资料，**非**本项目产出，部分条目与源码不符，见 DESIGN §1）。 |
 
 ## 发布（Releases）
 
