@@ -15,6 +15,9 @@
   "files": [
     "LICENSE",
     "lib",
+    "!lib/*.bak_*",
+    "!lib/*.bak-*",
+    "!lib/*.bak",
     "client",
     "cordis.patch.yml",
     "README.md"
