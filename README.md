@@ -34,9 +34,10 @@
 | `docs/WEBUI.md` | **Web 面板**：长在 DSH Web 里（设置 → 星驿）。显示什么、不做什么、怎么开、安全模型（**不是认证**）、已知边界。 |
 | `scripts/package-release.mjs` | 打包脚本：校验 tag 与两侧版本 → 产出 tgz + zip + SHA256SUMS + 发布说明。 |
 | `scripts/check-contract-parity.mjs` | 两侧契约常量一致性闸门（事件类型 / 错误码 / 路由 / 版本）。 |
+| `scripts/gen-rpc-methods.mjs` | **RPC 方法白名单生成器 + 闸门**：由 `dsh-astrbot-relay/data/p5_rpc_descriptors.json` 与 `p5_rpc_allowlist.md` 生成 `lib/rpc-methods.js`（`--check` 只比对不写，接在 `npm test` 里）。契约 §11 的白名单是安全边界，所以不接受手抄。 |
 | `scripts/verify-bridge-live.py` | **重启后的一键验收**（`npm run verify:bridge`）：路由挂没挂、`bridgeVersion`、鉴权是否 fail-closed、`state.json` 是否已生成。需要活的桥，**不进 `npm test`**。 |
 | `scripts/test-location-live.mjs` | **定位能力实测**（`npm run test:location-live`）：正向/反向定位、映射集合、不同会话集 —— 读会话存档比对 `session/title` 事件，不是看接口自说自话。 |
-| `.github/workflows/` | CI（语法 + 契约一致性 + 版本闸门 + 打包冒烟）与 Release（tag 触发自动发版）。 |
+| `.github/workflows/` | CI（语法 + RPC 方法表 + 契约一致性 + 两侧自测与链路 + 版本闸门 + 打包冒烟）与 Release（tag 触发自动发版）。 |
 
 ## 发布（Releases）
 

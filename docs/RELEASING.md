@@ -135,16 +135,33 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 
 ## 5. CI 的检查项
 
-`ci.yml` 在 push 到 `main` 与所有 PR 上跑：
+`ci.yml` 在 push 到 `main` 与所有 PR 上跑，而它**实际只跑一条命令**：`npm test`。
+刻意不在 workflow 里再抄一份分区命令——CI 与本地必须是同一条链，否则
+「本地全绿、CI 只跑了其中一半」的漂移迟早发生（`ci.yml` 里留着这条注释）。
+下面这份清单就是 `package.json` 的 `test` 链，顺序照抄：
 
 - `python -m py_compile` 编译 AstrBot 侧的 5 个 py 文件（`py_compile` **只编译不执行**，
   所以 `main.py` 里 `import astrbot` / `import aiohttp` 都不影响这一步）；
-- DSH 侧 `node --check` 遍历 `lib/` 下**全部** JS（新增文件不必回来改 workflow）；
+- DSH 侧 `node --check` 遍历 `lib/` 下**全部** JS（`scripts/check-syntax.mjs`；新增文件不必回来改 workflow）；
 - 两侧契约常量一致性（`scripts/check-contract-parity.mjs`）；
-- 两侧纯逻辑单测 + **两套假宿主接线测试**（`scripts/test-im-heartbeat.py`、
-  `scripts/test-im-commands.py`，共用 `scripts/_fake_astrbot.py`；见 `package.json` 的 `test` 链）；
+- **RPC 方法表一致性闸门**（`scripts/gen-rpc-methods.mjs --check`）：
+  `dsh-astrbot-relay/data/p5_rpc_descriptors.json` 与 `.../data/p5_rpc_allowlist.md`
+  必须逐条对上（条数相等、方法名集合相等），且生成物 `lib/rpc-methods.js` 与表一致，
+  任一侧漂移即非零退出。契约 §11 的白名单是一条**安全边界**——多一行就等于多暴露一个
+  宿主方法——所以这张表不接受手抄：改描述符、改白名单或改生成口径之后，必须重跑本闸门；
+- 两侧纯逻辑单测（`test-location.mjs` / `test-location-text.py` / `test-allowlist.py` /
+  `test-session-title.mjs` / `test-questions.mjs` / `test-heartbeat-state.py` 等）；
+- **七组假宿主测试**：
+  - DSH 侧 5 个文件——四条链路端到端（`test-question-chain.mjs`、`test-proactive-chain.mjs`、
+    `test-panel-chain.mjs`、`test-rpc-chain.mjs`）＋ 假宿主加载器自身（`test-fake-host.mjs`），
+    全部走 `scripts/_fake-host.mjs`：把插件的 `lib/` **复制**到 `.test-tmp/<label>/pkg/` 再搭桩，
+    真实目录永不被写（`test-fake-host.mjs` 钉住这条性质）；
+  - AstrBot 侧 2 个文件——`test-im-heartbeat.py`、`test-im-commands.py`，共用
+    `scripts/_fake_astrbot.py`（其中 `test-im-commands.py` 另有一条对齐 `BridgeTransport`
+    12 个方法签名的**元测试**）；
 - 版本一致性闸门（**三处**：工作区根 `package.json` / `dsh-astrbot-relay/package.json` /
-  `astrbot_plugin_dsh_relay/metadata.yaml`，见 §1）；
+  `astrbot_plugin_dsh_relay/metadata.yaml`，见 §1；同一闸门还查必需文件清单与
+  README 里「最新发布」指引是否指向当前版本）；
 - 完整打包冒烟：Node 22 与 Node 24 各真打一遍，两轮的 `SHA256SUMS` 必须逐字节相同，
   并 `sha256sum -c` 核对（`--check` 不执行归档器，所以这里跑的是真打包）。
 
@@ -161,6 +178,13 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 > 被两个测试文件共用；其中 `test-im-commands.py` 另有一条**元测试**，
 > 逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名——
 > 桩写错比生产代码写错更危险：它会让上面所有用例都给出看似合理的假结论。
+> DSH 侧的对应物是 `scripts/_fake-host.mjs`（隔离副本加载器，见上），
+> 它同样有自己的测试：`scripts/test-fake-host.mjs`。
+>
+> **新增宿主机依赖时要回来改桩清单**：DSH 侧落在 `_fake-host.mjs` 的 `STUBS`
+> （v0.9.5 加 `@deepseek-ai/dsh-attachment` 时就是这样），AstrBot 侧落在
+> `_fake_astrbot.py`。`test-fake-host.mjs` 会把漏掉的依赖当场拦下——否则
+> chain 测试会在别人机器上以「功能回归」的样子红掉，而那其实是环境问题。
 
 ## 6. 发布纪律：已知的“不可用”状态（自 `v0.3.0` 起的长期快照）
 
