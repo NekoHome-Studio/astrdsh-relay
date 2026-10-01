@@ -384,7 +384,7 @@ AttributeError: 'Main' object has no attribute '_hb_states'
 > v0.8.8 追加：假宿主那两层现在是**两个文件**——`scripts/_fake_astrbot.py` 是共用宿主
 > （桩 + 假 transport + 假事件），`test-im-heartbeat.py` 测心跳/主动消息，
 > `test-im-commands.py` 测指令分发/审批/问答/卡片。后者里还有一条**元测试**：
-> 逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名——
+> 逐一对齐假 transport 与真 `BridgeTransport` 的 13 个方法签名——
 > 因为桩写错时，上面所有用例都会给出看似合理的假结论（真的踩过：假 `fork`
 > 参数名写成 `upto_turn`、真名是 `at_seq`，于是处理器的 `except Exception`
 > 把 TypeError 吞掉，测试看到的是「没有任何调用」）。

@@ -9,7 +9,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 ## 当前状态
 
-**P1 + P2 已落地，是可运行实现。** 十个端点全部有真实 handler；契约预留的三项配置
+**P1 + P2 已落地，是可运行实现。** 十三个端点全部有真实 handler；契约预留的三项配置
 （`hmacMode` / 非 `one-to-one` 的 `policy` 轮转 / `idleTtlMs`）也均已接线。
 
 | 部位 | 状态 |
@@ -25,9 +25,13 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `POST /message`（agent 会话驱动） | ✅ 就位（`agents.create` / `followup` / `whenIdle`） |
 | `GET /events`（SSE 下行 + 事件转发） | ✅ 就位（环形缓冲 + `push` / `deliver` / `Last-Event-ID` 续传） |
 | `POST /approval`（审批 waterfall） | ✅ 就位（4 位一次性 code，`askApproval` 挂 `approval/request`） |
+| `POST /answer`（问答回执，契约 §16） | ✅ 就位（把答案交给挂起的 `askQuestion`） |
 | `GET /workspaces`（工作区清单，契约 §13.1） | ✅ 就位（`workspaceRegistry.list()` 的只读面投影） |
 | `POST /session/rebind`（改指到指定工作区，契约 §13.2） | ✅ 就位（建新会话 + 换映射，旧会话保留） |
+| `POST /session/fork`（对话中分支，契约 §14） | ✅ 就位（把某轮前缀复制成新会话，逐行对齐官方 `ApiSessionController.fork`） |
 | `POST /session/adopt`（认领已存在会话，契约 §15） | ✅ 就位（只改本对话的映射：不 resume / 不 rename / 不 create） |
+| `GET /proactive?since=`（主动消息取件，契约 §18） | ✅ 就位（每对话发件箱 + 全局自增游标） |
+| `POST /rpc`（控制面转发，契约 §11） | ✅ 就位（auth → 签名 → 白名单，三道缺一不可） |
 | 幂等（有界 LRU + TTL）、卸载期 `cancel → whenIdle → flush → dispose` 收尾 | ✅ 就位 |
 | 映射的**写入**路径（建立/回收会话时落盘） | ✅ 就位 |
 | `hmacMode`（HMAC 签名）、非 `one-to-one` 的 `policy` 轮转、`idleTtlMs` 空闲回收 | ✅ 就位（轮转与回收只归档不删历史） |
@@ -40,7 +44,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 
 指令清单、接管行为（`should_call_llm` / `stop_event`）与过滤顺序见
 [`../astrbot_plugin_dsh_relay/README.md`](../astrbot_plugin_dsh_relay/README.md)；
-本包只负责十个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
+本包只负责十三个端点，端点的语义约定以 `../docs/BRIDGE-CONTRACT.md` 为准。
 
 ## 为什么不用现成的 `/api/<method>` RPC 面
 

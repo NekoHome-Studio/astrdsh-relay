@@ -20,15 +20,15 @@
 
 | 文件 | 是什么 |
 |---|---|
-| `docs/BRIDGE-CONTRACT.md` | **接口契约 v6**。两侧唯一真相来源：拓扑、会话键、12 个端点（含 §13 工作区改指、§14 分支、§15 会话认领、§16 问答、§18 主动消息取件）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批与问答流程、§17 心跳。 |
+| `docs/BRIDGE-CONTRACT.md` | **接口契约 v7**。两侧唯一真相来源：拓扑、会话键、13 个端点（含 §11 控制面、§13 工作区改指、§14 分支、§15 会话认领、§16 问答、§18 主动消息取件）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批与问答流程、§17 心跳。 |
 | `docs/DESIGN.md` | **五层设计（核实修正版）**。含「原始设计假设 vs 源码事实」的 12 条差异修正表、分阶段计划、跨机部署清单、风险登记。 |
 | `docs/dsh-side-capabilities.md` | DSH 侧 API 核实报告（1590 行，逐条 `路径:行号` 证据）。 |
 | `docs/astrbot-side-capabilities.md` | AstrBot 侧 API 核实报告（1889 行，逐条证据）。 |
 | `docs/connector-surface.md` | 既有 connector 的**能力面清点**（替代方案的验收基线 + 迁移三分类）。 |
 | `docs/control-plane-transport.md` | 控制面传输可行性调研：能否在进程内调用/转发 DSH host RPC（决定替代成本）。 |
 | `docs/evidence/` | 实跑固化证据（`dsh --profile web --dump-config` 的实际层组合输出）。 |
-| `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js` / `lib/proactive.js`，十二个端点全部落地）。 |
-| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十二个方法全部实现）。 |
+| `dsh-astrbot-relay/` | DSH 侧 host 插件（`package.json` / `cordis.patch.yml` / `lib/contract.js` / `lib/index.js` / `lib/proactive.js`，十三个端点全部落地）。 |
+| `astrbot_plugin_dsh_relay/` | AstrBot 侧 Star 插件（`main.py` / `_conf_schema.json` / `metadata.yaml` / `contract.py` / `heartbeat_state.py`，传输层十三个方法全部实现）。 |
 | `docs/RELEASING.md` | 发版流程：统一版本规则、tag 约定、产物形态与原因、CI 检查项。 |
 | `docs/DEPLOY-CHECKLIST.md` | **部署与验证清单**：装包 → 逐条验证（数据面 / 心跳 A / 自主心跳 B / 审批 / 问答 / 呈现 / 跨机反代）→ 记录表 → 回滚。三处「未实测」的关闭凭据就是它的 §11。 |
 | `docs/WEBUI.md` | **Web 面板**：长在 DSH Web 里（设置 → 星驿）。显示什么、不做什么、怎么开、安全模型（**不是认证**）、已知边界。 |
@@ -65,10 +65,12 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 
 > **`v0.3.0` 起是可运行实现**：`/health`、`/where`、`/conversations`、`/message`、
 > `/events`（SSE 流式）、`/approval`、`/answer`（问答回执）、`/workspaces`、
-> `/session/rebind`、`/session/fork`、`/session/adopt`、`/proactive`（主动消息取件）
-> 十二个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
+> `/session/rebind`、`/session/fork`、`/session/adopt`、`/proactive`（主动消息取件）、
+> `/rpc`（控制面，唯一带权限门）
+>
+> 以上十三个端点全部落地，AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
 > `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` /
-> `send_approval` / `send_answer` / `proactive` / `aclose` 全部实现。
+> `send_approval` / `send_answer` / `proactive` / `rpc` / `aclose` 全部实现。
 > 自动生成的发布说明会如实列出「已实现」与「未实现」；当前已无未实现项。
 
 ## 指令速查（AstrBot 侧）

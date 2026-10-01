@@ -158,7 +158,7 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
     真实目录永不被写（`test-fake-host.mjs` 钉住这条性质）；
   - AstrBot 侧 2 个文件——`test-im-heartbeat.py`、`test-im-commands.py`，共用
     `scripts/_fake_astrbot.py`（其中 `test-im-commands.py` 另有一条对齐 `BridgeTransport`
-    12 个方法签名的**元测试**）；
+    13 个方法签名的**元测试**）；
 - 版本一致性闸门（**三处**：工作区根 `package.json` / `dsh-astrbot-relay/package.json` /
   `astrbot_plugin_dsh_relay/metadata.yaml`，见 §1；同一闸门还查必需文件清单与
   README 里「最新发布」指引是否指向当前版本）；
@@ -176,7 +176,7 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 > **假宿主的分工**（v0.8.8 起）：`scripts/_fake_astrbot.py` 是共用宿主
 > （`astrbot.*` 桩 + 假 transport + 假事件 + 从 `_conf_schema.json` 读默认值的工厂），
 > 被两个测试文件共用；其中 `test-im-commands.py` 另有一条**元测试**，
-> 逐一对齐假 transport 与真 `BridgeTransport` 的 12 个方法签名——
+> 逐一对齐假 transport 与真 `BridgeTransport` 的 13 个方法签名——
 > 桩写错比生产代码写错更危险：它会让上面所有用例都给出看似合理的假结论。
 > DSH 侧的对应物是 `scripts/_fake-host.mjs`（隔离副本加载器，见上），
 > 它同样有自己的测试：`scripts/test-fake-host.mjs`。
@@ -196,9 +196,9 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
   轮转与回收走 `workspaceRegistry.archiveSession`，**只归档不删历史**。
 - 端点面：`/health`、`/where`、`/conversations`、`/message`、`/events`（SSE）、
   `/approval`、`/answer`、`/proactive`、`/workspaces`、`/session/rebind`、`/session/fork`、
-  `/session/adopt` 十二个端点全部可用；AstrBot 侧 `BridgeTransport` 的 `health` / `where` /
-  `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` / `send_approval` /
-  `send_answer` / `proactive` / `aclose` 全部实现。
+  `/session/adopt`、`/rpc`（控制面）十三个端点全部可用；AstrBot 侧 `BridgeTransport` 的
+  `health` / `where` / `workspaces` / `rebind` / `fork` / `adopt` / `send_message` / `events` /
+  `send_approval` / `send_answer` / `proactive` / `rpc` / `aclose` 全部实现。
 - **一处未实测**（`v0.8.7` 起）：自主心跳（B 半）依赖
   `agent.followup(createUserMessage({source:{kind:'plugin',…}}))` 真能起一轮 turn，
   本机没有活的 DSH 宿主可验（契约 §18.8）。A 半（连通性心跳）不受影响。

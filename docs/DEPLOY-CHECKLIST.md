@@ -99,7 +99,7 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 | `signatureSkewMs` | `60000` | 只在 `hmacMode: true` 时有意义：允许的签名时间偏移；应 ≥ 两侧时钟最大偏差 |
 | `policy` | `one-to-one` | `one-to-one` / `on-demand` / `daily` 轮转 |
 | `sessionTitleTemplate` | `星驿 · {platform}/{messageType}/{sessionId}` | 反向定位：让 DSH Web 的会话列表里认得出「哪条来自哪个群」 |
-| `approvalTimeoutMs` | `120000` | 应与 IM 侧 `approval_timeout_ms` 一致或略大 |
+| `approvalTimeoutMs` | `120000` | 应与 IM 侧 `approval_timeout_ms` 一致或**略小**（超时按拒绝处理，fail closed） |
 | `questionTimeoutMs` | `300000` | 同上，对应 IM 侧 `question_timeout_ms` |
 | `allowedRpcMethods` | 26 条缺省白名单 | 白名单是**整体替换**（见下）。只想放行子集 / 加自定义方法时才写 |
 | `proactiveHeartbeatMs` | `0`（**关**） | 自主心跳。**默认关**，第 6 节才会动它 |
@@ -188,7 +188,7 @@ is incompatible with dsh <运行时版本>: peerDependencies {…}. Exact-versio
 路由一起 404。**这与插件版本无关**：同一代声明会被一起跳过（`0.9.0-alpha` 与 `0.9.2`
 的 peer 范围逐字相同）。两种处理：
 
-1. **升级插件**到 peer 范围覆盖当前运行时的版本（`v0.9.6` 起已覆盖 `0.2.x`）✓ 推荐；
+1. **升级插件**到 peer 范围覆盖当前运行时的版本（**`v0.9.7` 起才覆盖 `0.2.x`；v0.9.6 及更早都不覆盖**）✓ 推荐；
 2. 或临时授一次**精确版本豁免**（会打印「可能崩溃或损坏数据」的警告，是「接受风险」）：
 
 ```powershell

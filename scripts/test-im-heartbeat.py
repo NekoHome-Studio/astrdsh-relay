@@ -246,7 +246,7 @@ def _() -> None:
     assert not missing, f"这些字段在 Main.__init__ 里没定义（很可能被写到了别的类上）：{missing}"
 
 
-@test("BridgeTransport 的十二个契约方法都在（README 与发布说明就是这么写的）")
+@test("BridgeTransport 的十三个契约方法都在（README 与发布说明就是这么写的）")
 def _() -> None:
     # 与「Main 字段挂错类」同源的另一种错位：方法写到了错误的类上。
     # 曾经 `proactive()` 就落在 `Main` 里、而它内部调的是 `BridgeTransport._request`
@@ -254,7 +254,7 @@ def _() -> None:
     transport = plugin_main.BridgeTransport({})
     expected = [
         "health", "where", "workspaces", "rebind", "fork", "adopt",
-        "send_message", "events", "send_approval", "send_answer", "proactive", "aclose",
+        "send_message", "events", "send_approval", "send_answer", "proactive", "rpc", "aclose",
     ]
     missing = [name for name in expected if not callable(getattr(transport, name, None))]
     assert not missing, f"BridgeTransport 缺少这些契约方法：{missing}"
