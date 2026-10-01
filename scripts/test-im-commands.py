@@ -270,6 +270,59 @@ def _() -> None:
     assert any("调用工具" in text for text in event.sent_text), event.sent_text
 
 
+@test("⚠️ 中途关掉 stream_enabled ⇒ 立刻停（这一条才钉得住「现读」而不是「turn 开头快照」）")
+def _() -> None:
+    """为什么必须有这一条：上面那些用例都在 **turn 开始前** 设好开关，
+    对「turn 开头捕获一次」的旧写法**同样会绿**——实测把那两处现读改回快照后，
+    本文件其余 59 项全绿，只有本用例与下一条变红。而这次修复的卖点恰恰是
+    「中途改也立刻生效」，所以必须有一条在 turn **跑到一半**翻开关的用例。
+    """
+    mod = __import__("_fake_astrbot")
+    # throttle_ms=0：本层测「开关拦不拦得住」，不是合流窗口（那另有其测试）。
+    m, _c, t = mod.make_main(stream_enabled=True, flush_chars=1, throttle_ms=0)
+    t.frames = turn_frames(deltas=("第一部。", "第二部。"), final="权威最终文本")
+    event = FakeEvent(message_str="dsh 你好")
+    original_send = event.send
+
+    async def send_then_flip(result) -> None:
+        await original_send(result)          # 第一片真的发出去了
+        m.config["stream_enabled"] = False   # 就在这一刻关掉（turn 还在跑）
+
+    event.send = send_then_flip  # type: ignore[method-assign]
+    drive(m, event)
+    assert event.sent_text == ["第一部。"], f"第二片应被拦住，实际 {event.sent_text}"
+    assert event.yielded_text == ["权威最终文本"], event.yielded_text
+
+
+@test("⚠️ 中途打开 stream_enabled ⇒ 攒着的分片立刻补发")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    m, _c, t = mod.make_main(stream_enabled=False, flush_chars=1, throttle_ms=0)
+    t.frames = turn_frames(deltas=("第一部。", "第二部。"), final="权威最终文本")
+    event = FakeEvent(message_str="dsh 你好")
+    # 关着的时候没有 event.send 可挂钩，改挂在「每帧都会调」的 _touch_frame 上。
+    # ⚠️ 它在**每帧分发之前**被调用，所以第 n 次调用 = 第 n 帧的「处理前」：
+    #    #1 = turn/start、#2 = delta1、#3 = delta2。
+    # 要让 **delta2** 看到新值就得在 #3 翻；在 #2 翻等于「turn 一开始就开着」，
+    # delta1 会被发出去，也就测不到「中途生效」。
+    original_touch = m._touch_frame
+    calls = {"n": 0}
+
+    def touch_then_flip(umo) -> None:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            m.config["stream_enabled"] = True
+        original_touch(umo)
+
+    m._touch_frame = touch_then_flip  # type: ignore[method-assign]
+    drive(m, event)
+    # 本层测「开关拦不拦得住」：关着时一片都不发，打开后攒着的必须补发。
+    # 具体切在哪句边界属切句策略（另有其测试），这里不钉。
+    assert event.sent_text, "打开后攒着的分片应被补发，实际一片都没发"
+    assert "第一部。" in "".join(event.sent_text), event.sent_text
+    assert event.yielded_text == ["权威最终文本"], event.yielded_text
+
+
 @test("turn/end 的 reason.kind=error 且尚无输出 ⇒ 如实报错")
 def _() -> None:
     mod = __import__("_fake_astrbot")
