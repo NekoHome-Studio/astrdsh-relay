@@ -199,6 +199,18 @@ export const Config = Schema.object({
   // **绝不**替宿主撤销 turn（理由见 askQuestions 的注释）。
   questionsEnabled: Schema.boolean().default(true),
   questionTimeoutMs: Schema.number().default(300_000),
+  /**
+   * **兜底转发目标**（v0.9.6）：网页端会话发起的提问没有可反查的 agent
+   * （那个会话从来没被 IM 接管过），按老规矩只能 `next()` 交还框架，
+   * 于是 IM 侧永远看不见那张卡。这里填一个**对话键**
+   * （如 `绫地宁宁:FriendMessage:3430088565`）后，这类提问会改投该对话。
+   *
+   * 空串 = 关闭，保持 fail-open 的旧行为（未命中就交还框架）。
+   *
+   * ⚠️ 两张卡说的是**同一个提问**：谁先答谁生效，另一边的卡会一直等到超时；
+   * 超时若发生在网页侧，等于这次问答被 ASK_ABORTED 收场。
+   */
+  questionsFallbackConversation: Schema.string().default(''),
 
   // ---- 控制面转发（契约 §11：POST /rpc）----
   /**
@@ -543,6 +555,16 @@ export function apply(ctx, config) {
       }
       const envelope = { seq: (bridge.seq += 1), ts: Date.now(), ...frame }
       deliver(bridge, envelope)
+
+      // 记账：把内存里的下行进度回写到落盘记录。
+      // `bridge.seq` 只活在内存（进程重启即归零），而面板与诊断读的是记录里的 `seq`；
+      // 不回写的话它永远是 `newRecord()` 给的 0（见 lib/location.js:145），
+      // 「seq 恒 0」就会被误读成「从未推出过帧」（这就是它此前一直骗人的原因）。
+      // ⚠️ 只改内存、**不在这里 persistRecords()**：本函数挂在心跳与流式输出的高频
+      //     路径上，逐帧原子写盘会把 IO 打爆；让 seq 随下一次自然落盘捎带出去即可，
+      //     代价只是重启后可能回退若干帧——诊断字段，够用。
+      const progress = records.get(bridge.conversation)
+      if (progress && progress.seq !== bridge.seq) progress.seq = bridge.seq
 
       const cap = Math.max(2, Math.trunc(config.eventBufferSize))
       // 留一格给紧随其后的 gap 帧，缓冲才真正稳定在 cap 条以内（原版会留 cap+1 条）。
@@ -1217,13 +1239,44 @@ export function apply(ctx, config) {
       })
     }
 
+    // ⚠️ `{ prepend: true }` 不是装饰，是**功能必需**：
+    //     `@deepseek-ai/dsh-api-remotes` 也用 `ctx.on('user-questions/request', ...)`
+    //     注册，并且它把帧推给网页 UI 之后就走 `forwardWaterfall` 的
+    //     `outcome.kind === 'result'` 分支直接 resolve，**不再调用 `next()`** ——
+    //     cordis 的 waterfall 是「谁先接管谁说了算」，排在它后面的监听器永远拿不到
+    //     请求。要拿到请求只能排到它前面，而顺序由 `register()` 里的
+    //     `options.prepend ? unshift : push` 决定（不是文件里的书写顺序）。
+    // ⚠️ 但「排到前面」≠「把后面那一路掐断」：接管之后必须自己把 `next()` 跑起来，
+    //     否则下游的网页 UI 卡片永远不弹（实测症状：网页连卡都不出、IM 也没收到，
+    //     两头空）。正确姿势是**双路并行 + race**——网页卡照常渲染，IM 侧同时等，
+    //     先给出答案的那一路算数。
     host.on('user-questions/request', (request, next) => {
+      // 关掉问答 → 原样交还框架（行为与没装桥时一致）
+      if (!config.questionsEnabled) return next()
       const bridge = bridgeByAgent(request?.agent?.id)
-      // 反查不到（agent 非本桥托管）或关掉了问答，就原样交还给框架 ——
-      // 那时它会以 NO_PROVIDER / DELEGATED_CALLER 收场，行为与没装桥时一致，fail-open 且不越权。
-      if (!bridge || !config.questionsEnabled) return next()
-      return askQuestions(bridge, request)
-    })
+      // 反查不到 = agent 非本桥托管（典型是网页端会话）。配了兜底对话就改投过去：
+      // `askQuestions` 只用到 bridge 的 conversation 与 questions 两张牌，不需要
+      // agent，所以这里 `bridgeOf()` 懒建实例即可。
+      // ⚠️ 该实例必须真的落进 `bridges` 表：`handleAnswer` 是按对话键取表的，
+      // 键对不上就回 NOT_FOUND。
+      const fallback = String(config.questionsFallbackConversation ?? '').trim()
+      const target = bridge ?? (fallback ? bridgeOf(fallback) : null)
+      if (!target) return next()
+
+      // 下游（网页 UI 卡片）那一路：继续走 waterfall，拿到的是「网页作答」的 Promise。
+      let ui = null
+      try {
+        ui = next()
+      } catch (error) {
+        // 下游没有 provider 时会同步抛：那就让 IM 那一路单独决定成败
+        ui = null
+      }
+      const im = askQuestions(target, request)
+      if (!ui || typeof ui.then !== 'function') return im
+      // race 丢掉的那一路不会悬挂：`askQuestions` 自带超时与幂等出口（有 seconds
+      // 计时器兜底），UI 那一路的 reject 也会被 race 吞掉，不会变成 unhandled。
+      return Promise.race([im, ui])
+    }, { prepend: true })
 
     // ────────────────────────────────────────────────────────────────
     // 自主心跳（B）：调度、哨兵抑制、发件箱

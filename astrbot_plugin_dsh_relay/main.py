@@ -1460,7 +1460,9 @@ class Main(Star):
             "deadline": time.monotonic() + timeout_ms / 1000.0,
         }
 
-        prefix = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
+        # ★ 必须用 _hint_prefix：配置里前缀自带尾空格，`.strip()` 会拼出
+        # `/dshapprove` 这种用户照抄必失败的死串（2026-10-01 踩过）。
+        prefix = _hint_prefix(self._cfg("trigger_prefix", "dsh "))
         lines = [
             "需要你确认一项操作：",
             f"· 工具：{frame.get('toolName') or '未知'}",
@@ -1510,7 +1512,7 @@ class Main(Star):
             "answers": {},
         }
 
-        prefix = str(self._cfg("trigger_prefix", "dsh ") or "").strip()
+        prefix = _hint_prefix(self._cfg("trigger_prefix", "dsh "))
         lines = ["DSH 想问你："]
         for index, item in enumerate(questions, start=1):
             head = str(item.get("header") or "").strip()
@@ -2614,6 +2616,22 @@ def _match_prefix(raw: str, prefix: str) -> "str | None":
     if tail and not tail[:1].isspace():
         return None
     return tail
+
+
+def _hint_prefix(value: Any) -> str:
+    """把 ``trigger_prefix`` 规范成「提示里能直接照抄」的形态：去空白后补一个空格。
+
+    配置本机实读为 ``'/dsh '``（含尾空格，见 ``_match_prefix`` 的三条容错）。
+    早前这里写的是 ``.strip()``，再和命令名拼成 ``f"{prefix}{command}"``，于是
+    提问/审批提示里的写法变成 ``/dshanswer``、``/dshapprove`` —— 用户照着敲一定
+    匹配失败（``_match_prefix`` 第 2 条要求基名后紧跟空白），插件静默 ``return``，
+    消息落到默认 LLM，表现和「插件没加载」一模一样（2026-10-01 实测踩中）。
+
+    所以：**拼接命令名时前缀必须自带尾空格**。``_usage_text`` 走的是
+    ``f"{base} {cmd}"`` 显式空格写法，不受此坑影响。
+    """
+    base = str(value or "").strip()
+    return f"{base} " if base else ""
 
 
 def _usage_text(base: str) -> str:

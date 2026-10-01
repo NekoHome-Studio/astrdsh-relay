@@ -52,7 +52,19 @@ function makeHarness(overrides = {}) {
   }
 
   const routes = new Map()
-  const listeners = new Map()
+  // cordis 事件是 waterfall 链：同一事件可挂多个监听器，`{ prepend: true }` 的排到队首、
+  // 因而先拿到请求。旧桩写成 `Map<event, listener>`（后注册直接覆盖，第三个参数 options
+  // 被整条丢掉），于是「排到 UI 那一路前面」在测试里根本无法表达，race 语义也无从验证。
+  const listenerBags = new Map()
+  const listeners = {
+    has: (event) => (listenerBags.get(event)?.length ?? 0) > 0,
+    get: (event) => {
+      const bag = listenerBags.get(event)
+      if (!bag || bag.length === 0) return undefined
+      // 只取链路头；后续节点由测试自己通过 next() 提供，桩不模拟整条 waterfall
+      return (request, next) => bag[0](request, next)
+    },
+  }
   const disposers = []
   const logs = { info: [], warn: [] }
   const agents = []
@@ -74,7 +86,16 @@ function makeHarness(overrides = {}) {
         return () => routes.delete(route.path)
       },
     },
-    on: (event, listener) => { listeners.set(event, listener); return () => listeners.delete(event) },
+    on: (event, listener, options) => {
+      const bag = listenerBags.get(event) ?? []
+      if (options && options.prepend) bag.unshift(listener)
+      else bag.push(listener)
+      listenerBags.set(event, bag)
+      return () => {
+        const at = bag.indexOf(listener)
+        if (at >= 0) bag.splice(at, 1)
+      }
+    },
     get: () => undefined,
     agents: {
       // 恒为 undefined → 让 /message 走 create 分支
@@ -117,7 +138,7 @@ function makeHarness(overrides = {}) {
   }
 
   return {
-    config, ctx, host, routes, listeners, disposers, logs, agents,
+    config, ctx, host, routes, listeners, listenerBags, disposers, logs, agents,
     resolveIdle: () => idleResolve(), resetIdle,
   }
 }
@@ -205,14 +226,24 @@ function fireTurnEnd(h, agent) {
   listener(agent.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'stop' } } })
 }
 
-/** 触发 user-questions/request，返回 { promise, nextCalled }。 */
+/**
+ * 触发 user-questions/request，返回 { promise, seen }。
+ *
+ * `seen.next()` 返回的是**可控的 pending Promise**，不是 `Promise.resolve({ answers: [] })`：
+ * 真实 UI 那一路要等人类去点卡片，绝不会瞬间兑现。旧桩「立刻兑现」把插件新写的
+ * `Promise.race([im, ui])` 直接喂给 UI 路赢，于是六条用例集体变红——那是桩不真实，
+ * 不是设计错。要模拟 UI 抢答，测试自己调 `seen.answerUi(value)` 放行即可。
+ */
 function fireQuestion(h, agent, questions, { signal } = {}) {
   const listener = h.listeners.get('user-questions/request')
   assert.ok(listener, 'user-questions/request 监听器未注册')
   const seen = { nextCalled: false }
+  let answerUi = null
+  seen.uiPromise = new Promise((resolve) => { answerUi = resolve })
+  seen.answerUi = (value = { answers: [] }) => answerUi(value)
   const promise = listener({ agent: { id: agent.id }, questions, signal }, () => {
     seen.nextCalled = true
-    return Promise.resolve({ answers: [] })
+    return seen.uiPromise
   })
   return { promise, seen }
 }
@@ -460,7 +491,9 @@ await test('questionsEnabled=false → 交还框架（next 被调），不下发
   const { promise, seen } = fireQuestion(h, agent, SAMPLE_QUESTIONS)
   assert.equal(seen.nextCalled, true, '关掉问答后应原样交还框架')
   assert.deepEqual(frames(sse).filter((f) => String(f.type).startsWith('question/')), [])
-  await promise // 交还框架时返回的是 next() 的结果
+  // 这条支路是 `return next()`，下游 UI 的 Promise 被原样透传回来
+  seen.answerUi({ answers: [{ id: 'q1', selected: ['A'] }] })
+  assert.deepEqual(await promise, { answers: [{ id: 'q1', selected: ['A'] }] })
 })
 
 await test('bridgeByAgent 反查不到 → next（fail-open，不越权）', async () => {
@@ -474,6 +507,62 @@ await test('bridgeByAgent 反查不到 → next（fail-open，不越权）', asy
   })
   assert.equal(nextCalled, true, '非本桥托管的 agent 应原样交还')
 })
+
+await test('配了 questionsFallbackConversation → 非托管提问改投该对话，且可在该对话代答', async () => {
+  const h = makeHarness({ questionsFallbackConversation: CONV })
+  mod.apply(h.ctx, h.config)
+  // 刻意**不**建桥：走 bridgeOf 懒建，验证「没有 agent 也能托住提问」
+  const sse = await callRoute(h, `${PREFIX}/events`, {
+    method: 'GET', headers: auth(h), query: `conversation=${encodeURIComponent(CONV)}`,
+  })
+  const listener = h.listeners.get('user-questions/request')
+  const seen = { nextCalled: false }
+  // 新语义（双路并行 + race）：兜底命中后**仍然**要调 next()，
+  // 否则网页那一路会被掐断（这正是「网页卡片不弹」的元凶）。两条路谁先给答案算谁的。
+  let answerUi = null
+  const uiPromise = new Promise((resolve) => { answerUi = resolve })
+  const promise = listener({ agent: { id: 'web-only-agent' }, questions: SAMPLE_QUESTIONS }, () => {
+    seen.nextCalled = true
+    return uiPromise
+  })
+  assert.equal(seen.nextCalled, true, '兜底命中也要调 next()，让网页那一路照常弹出')
+
+  const required = frames(sse).find((f) => f.type === 'question/required')
+  assert.ok(required, `兜底对话应收到 question/required：${JSON.stringify(frames(sse))}`)
+
+  const ok = await callRoute(h, `${PREFIX}/answer`, {
+    headers: auth(h),
+    body: { conversation: CONV, callId: required.callId, answers: [{ id: 'q1', selected: ['A'] }] },
+  })
+  assert.equal(ok.status, 200, `兜底回执应 200（键必须一致）：${ok.text()}`)
+
+  const settled = await settledWithin(promise, 500)
+  assert.equal(settled.status, 'resolved')
+  assert.deepEqual(settled.value.answers, [{ id: 'q1', selected: ['A'] }])
+})
+
+await test('双路并行：UI 先答 → 以 UI 结果为准，IM 那一路自己超时收摊', async () => {
+  const h = makeHarness({ questionTimeoutMs: 800 })
+  mod.apply(h.ctx, h.config)
+  const { agent } = await createBridge(h)
+  fireTurnEnd(h, agent)
+  const sse = await callRoute(h, `${PREFIX}/events`, {
+    method: 'GET', headers: auth(h), query: `conversation=${encodeURIComponent(CONV)}`,
+  })
+  const { promise, seen } = fireQuestion(h, agent, SAMPLE_QUESTIONS)
+  const required = frames(sse).find((f) => f.type === 'question/required')
+  assert.ok(required, `IM 那一路仍应下发 question/required：${JSON.stringify(frames(sse))}`)
+
+  seen.answerUi({ answers: [{ id: 'q1', selected: ['B'] }] })
+  const settled = await settledWithin(promise, 500)
+  assert.equal(settled.status, 'resolved')
+  assert.deepEqual(settled.value.answers, [{ id: 'q1', selected: ['B'] }])
+
+  // race 先到先得：IM 侧的单子只能靠自己的超时收摊（不推孤儿 resolved 帧）
+  await new Promise((r) => setTimeout(r, 900))
+  assert.equal(settled.status, 'resolved', 'UI 已作答后 IM 超时不得改写结果')
+})
+
 
 await test('/session/adopt 换映射前先 drainPending：在等答案的问答以 retarget 结算', async () => {
   const h = makeHarness()
