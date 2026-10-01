@@ -177,6 +177,30 @@ Expand-Archive .\astrbot_plugin_dsh_relay-0.9.2.zip -DestinationPath <AstrBot �
 | `桥接鉴权失败` / `unauthorized` | `bridge_token` 与 DSH 侧 `token` 不一致，**或 AstrBot 还没重读到新配置**（见 §12.2） |
 | `桥接端没有这个端点` / 404 | `bridge_url` 的**路径段**写错了（漏了/多了 `/astrbot-relay`），或 DSH 侧插件根本没挂上 |
 
+**还有一种 404，症状一样但原因完全不同 —— 插件被宿主「整块跳过」**：
+
+```
+dsh: skipping profile bundle "dsh-astrbot-relay": Error: Plugin dsh-astrbot-relay@x.y.z
+is incompatible with dsh <运行时版本>: peerDependencies {…}. Exact-version exemption: not active.
+```
+
+它出现在 **DSH 自己的 stdout**（不是 AstrBot 日志里），且**所有** `/astrbot-relay/*`
+路由一起 404。**这与插件版本无关**：同一代声明会被一起跳过（`0.9.0-alpha` 与 `0.9.2`
+的 peer 范围逐字相同）。两种处理：
+
+1. **升级插件**到 peer 范围覆盖当前运行时的版本（`v0.9.6` 起已覆盖 `0.2.x`）✓ 推荐；
+2. 或临时授一次**精确版本豁免**（会打印「可能崩溃或损坏数据」的警告，是「接受风险」）：
+
+```powershell
+dsh plugin --profile web allow-version dsh-astrbot-relay@<版本> --dsh-version <运行时版本> --accept-risk
+dsh plugin --profile web version-exemptions        # 看当前授了哪些
+dsh plugin --profile web revoke-version dsh-astrbot-relay@<版本> --dsh-version <运行时版本>
+```
+
+> ⚠️ 运行时版本写错也不会报错，它只是匹配不上 —— 用 `dsh --version` 或从 `skipping`
+> 那行里的 `incompatible with dsh <版本>` 抄准。**注意 `--dsh-version` 是选项，不是位置参数**。
+
+
 **一条命令替你把 §2~§4 的机器可判定部分全对完：**
 
 ```powershell

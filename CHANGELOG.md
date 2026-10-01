@@ -1,5 +1,47 @@
 # 更新日志
 
+## v0.9.7 — 2026-10-01
+
+> **只修一件部署侧的事**：插件在 dsh `0.2.0-rc.2` 上不再被判为「版本不兼容」，
+> 因此**不再需要 `dsh plugin allow-version … --accept-risk` 那道豁免**。
+> 本版建立在 v0.9.6（提问卡双路并行）之上，**`BRIDGE_VERSION` 仍是 `7`**（契约常量表零变化）。
+
+### 修复
+
+- **peer 范围落后于运行时 ⇒ 宿主启动时整块跳过插件。** 插件声明的是 `^0.1.5-rc.2`，
+  而 dsh 已到 `0.2.0-rc.2`（`^0.1.5-rc.2` = `>=0.1.5-rc.2 <0.2.0`，不含它）。
+  宿主的 profile 组合阶段会打印 `skipping profile bundle "dsh-astrbot-relay"` 并
+  **不加载它**——现象是桥的**所有路由 404**，而那一行只在 DSH 自己的 stdout 里，
+  很容易和「没装」「路径写错」混起来。
+  这与插件版本无关：`0.9.0-alpha` 与 `0.9.2` 的声明逐字相同，会一起被跳过。
+  现在 dependencies 与 peerDependencies 都改为 **`^0.1.5-rc.2 || ^0.2.0-rc.2`**。
+  - **为什么是两条线，而不是看似更简洁的 `>=0.1.5-rc.2 <0.3.0`**：
+    semver 里 **prerelease 不会自动匹配普通范围**——后者对 `0.2.0-rc.2` 判 `false`。
+    已用真实 `semver` 实测：`^0.1.5-rc.2 || ^0.2.0-rc.2` 对 `0.1.5-rc.2` / `0.1.9` /
+    `0.2.0-rc.2` / `0.2.1` 全 `true`，对 `0.3.0` 为 `false`。
+  - 因此**不再需要豁免**；已授过的可以撤销：
+    `dsh plugin --profile web revoke-version dsh-astrbot-relay@<旧版本> --dsh-version 0.2.0-rc.2`
+
+### 验证
+
+- **真实 `web` profile**：撤掉全部豁免（`version-exemptions` 为空 `{}`）后，profile 组合
+  **不再跳过**该插件 ✓；在该 profile 上实探：`/astrbot-relay/health` → 200、
+  `/astrbot-relay/panel/status` → 200（含 2 条真实映射）、不带 token 与带错 token 均 → 401
+  （鉴权仍是 fail-closed）✓
+- **隔离 profile 交叉验证**（随机建的 `relaycheck`，跑完即拆，dsh `0.2.0-rc.2`）：
+  插件正常加载、`/plugins/events` → 200、启动期**没有** `ClientPackageCompositionError`
+  （说明 `dsh.client → client/client.js` 被成功组合）。
+- **仍未覆盖**：该运行时上**一整轮带 LLM 的真实对话**。
+  「不再被跳过」不等于「所有 API 行为都在 0.2.x 上验过」——别当成已验证。
+
+### 升级须知
+
+- 与 v0.9.6 一样，本版 `BRIDGE_VERSION` 是 **`7`**：从 v6 的版本（≤ v0.9.4，
+  含 `0.9.0-alpha` / `0.9.0`）升上来**两侧必须同时升**，否则 IM 侧校验 `/health`
+  的 `bridgeVersion` 不符会**拒绝启用**。
+- 本条目写在 v0.9.6 之上：v0.9.6 的 tag 已存在，本版是它在**部署侧**的补丁，
+  没有回退 v0.9.6 的任何行为。
+
 ## v0.9.6 — 2026-10-01
 
 > **两个「明明做了、却没人看见」的缺陷**：AstrBot 侧的提问/审批卡片把命令名写错
