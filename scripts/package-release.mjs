@@ -61,22 +61,29 @@ const fail = (message) => { console.error(`✗ ${message}`); process.exit(1) }
 const ok = (message) => { console.log(`✓ ${message}`) }
 
 // ─────────────────────────────────────────────────────────────────────
-// 1. 版本一致性（统一版本：两侧必须相等，且与 tag 相符）
+// 1. 版本一致性（统一版本：**三处**必须相等，且与 tag 相符）
+// 工作区根也进闸门，理由与那次漂移（v0.9.3–v0.9.5 根版本一直停在 0.9.2）见
+// docs/RELEASING.md §1：手工同步点迟早会漂，这与 README 指针是同一条教训。
 // ─────────────────────────────────────────────────────────────────────
 const dshPkg = JSON.parse(readFileSync(join(DSH_DIR, 'package.json'), 'utf8'))
+const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 const metaRaw = readFileSync(join(ASTRBOT_DIR, 'metadata.yaml'), 'utf8')
 const metaVersion = metaRaw.match(/^version:\s*(.+)$/m)?.[1]?.trim()
 
 if (!dshPkg.version) fail('dsh-astrbot-relay/package.json 缺少 version')
+if (!rootPkg.version) fail('package.json（工作区根）缺少 version')
 if (!metaVersion) fail('astrbot_plugin_dsh_relay/metadata.yaml 缺少 version')
-if (dshPkg.version !== metaVersion) {
+if (rootPkg.version !== dshPkg.version || metaVersion !== dshPkg.version) {
   fail(
-    `两侧版本不一致：dsh=${dshPkg.version}，astrbot=${metaVersion}。\n` +
-    '  本项目采用统一版本，两处必须相等；请同时修改后再发版。',
+    `三处版本不一致（统一版本要求相等）：\n` +
+    `    package.json（工作区根）              = ${rootPkg.version}\n` +
+    `    dsh-astrbot-relay/package.json        = ${dshPkg.version}\n` +
+    `    astrbot_plugin_dsh_relay/metadata.yaml = ${metaVersion}\n` +
+    '  改成同一个值再发版（见 docs/RELEASING.md §1）。',
   )
 }
 const version = dshPkg.version
-ok(`版本一致：${version}`)
+ok(`三处版本一致：${version}（含工作区根）`)
 
 if (tag) {
   const expected = `v${version}`

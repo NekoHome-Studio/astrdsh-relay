@@ -10,10 +10,18 @@
 | DSH 侧 | `dsh-astrbot-relay/package.json` | `"version"` |
 | AstrBot 侧 | `astrbot_plugin_dsh_relay/metadata.yaml` | `version:` |
 
-三处**必须相等**。`scripts/package-release.mjs` 会在打包前断言 **DSH 侧与 AstrBot 侧**
-相等（工作区根不是可分发的包，根版本是「这棵树的版本」标记，由人工同步；
-CI 的「版本一致性」步骤是同一道闸门）——不放心时可以拿
-`node -e "console.log(require('./package.json').version)"` 自己对一眼。
+三处**必须相等**。`scripts/package-release.mjs` 会在打包前断言**三处**都相等，
+不相等直接失败并把这行并排打出来（CI 的「版本一致性」步骤是同一道闸门）；
+不放心时也可以拿 `node -e "console.log(require('./package.json').version)"` 自己对一眼。
+
+> **为什么工作区根也由闸门管（2026-10-01 起）**：本节一直写着「三处必须相等」，但闸门
+> 当初只断言了两侧、根那处标为「由人工同步」。结果 **v0.9.3–v0.9.5 三个版本过去，
+> 根 `package.json` 一直停在 `0.9.2` 没人发现**——文档说一套、树里是另一套。
+> 这与 README 的「最新发布」指针是同一条教训（v0.8.4 漏改过一次，当时也是靠加硬闸门解决的）：
+> 手工同步点迟早会漂，而**漂了没人知道比漂了更糟**。代价只是发版时多改一行。
+>
+> 否决过的替代方案：根版本不一致时只**警告**、不失败——那会退化成噪音，而这道闸门要拦的
+> 恰恰是「发出去的树与自己的文档不符」。
 
 > `metadata.yaml` 的 `astrbot_version` 是**AstrBot 本体**的兼容范围
 > （`">=4.16,<5"`，PEP 440 写法、不带 `v`），跟本插件自己的 `version` 是两回事。
@@ -135,7 +143,8 @@ zip 与 tgz 的大小与 SHA256 **逐字节相同**（zip `1614474407…`、tgz 
 - 两侧契约常量一致性（`scripts/check-contract-parity.mjs`）；
 - 两侧纯逻辑单测 + **两套假宿主接线测试**（`scripts/test-im-heartbeat.py`、
   `scripts/test-im-commands.py`，共用 `scripts/_fake_astrbot.py`；见 `package.json` 的 `test` 链）；
-- 版本一致性闸门；
+- 版本一致性闸门（**三处**：工作区根 `package.json` / `dsh-astrbot-relay/package.json` /
+  `astrbot_plugin_dsh_relay/metadata.yaml`，见 §1）；
 - 完整打包冒烟：Node 22 与 Node 24 各真打一遍，两轮的 `SHA256SUMS` 必须逐字节相同，
   并 `sha256sum -c` 核对（`--check` 不执行归档器，所以这里跑的是真打包）。
 
