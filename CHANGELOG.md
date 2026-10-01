@@ -1,5 +1,87 @@
 # 更新日志
 
+## v0.9.5 — 2026-09-27
+
+> **图片输入链路贯通：`POST /message` 能带图了，只带图不带字的裸前缀消息不再被吞。**
+> **`bridgeVersion` 从 `6` 升到 `7`** —— `images[]` 是协议级新增，而且「这条路由能发多少字节」
+> 随部署的附件配置变化，这种事必须能在启动期拦下来。
+>
+> 本条目于 2026-10-01 补记（此前 `CHANGELOG` 只到 v0.9.4，`v0.9.5` 是空条目）；
+> `v0.9.5` tag 一并前移到含它的提交，因此 `e632c2d` 之后的评审回复、桩对齐与版本闸门
+> 也归入本版。
+
+### 变更
+
+- **`images[]`（契约 §3.1）**：`POST /message` 支持 `{ mediaType, data, name? }` 数组，
+  经 DSH 侧附件服务入库后以 `ImageBlock` 走在正文**之前**。`text` 与 `images` 不能同时为空，
+  **只带图不带文字是合法的**。AstrBot 侧 `send_message(..., images=)` 新增可选参；
+  DSH 侧新增 `readImageInputs(value)`。网桥**只校验形状**，不判张数 / 单图字节 / 聚合字节 /
+  mediaType 合规——那些限额属于部署配置（`attachment-local` 可调），网桥硬编码就必然和实配打架。
+  形状不合时**整条请求被拒**，错误串逐项点名。
+- **`IMAGE_MEDIA_TYPES` 闭集（双侧镜像）**：只有 `image/png` / `image/jpeg` / `image/webp` /
+  `image/gif` 四种，**必须带 `image/` 前缀**。前缀不是纸面约定而是硬判据：附件服务拿这份
+  白名单与**字节嗅探**结果做严格相等比对，写成 `"png"` 一律吃 `IMAGE_TYPE_MISMATCH`
+  （`unsupported`，400）——少一个 `image/` 就是上线即炸。图片准入错误码恰 **9** 个
+  （`ImageAdmissionErrorCode`），走既有的 `unsupported` / `internal` 两档；`dsh-attachment`
+  同包另 8 个非图码（附件总码 17 个）不参与图片分档，别把两者混算。
+- **请求体上限不再是常量（契约 §3.1.1）**：
+  `limit = max(1 MiB, min(64 MiB, ceil(maxMessageImageBytes * 4 / 3) + 1 MiB))`。
+  `maxMessageImageBytes` 从附件服务现读（部署里 `attachment-local` 那一行的实配），
+  `* 4/3` 是图片在 wire 上的 canonical base64 膨胀，`+ 1 MiB` 是给 `conversation` / `text` /
+  键名引号留的余量（`IMAGE_BODY_HEADROOM_BYTES`）。这个反推口径与官方前端的
+  `assertImageBodyCapacity` 一致——**别自己发明一个**。`64 MiB`
+  （`IMAGE_BODY_CEILING_BYTES`）是网桥自设的硬顶：`readRawBody` 会把整份请求体缓存进内存，
+  照 `attachment-local` 默认的 200 MiB 聚合上限反推会得到 266 MiB 的缓冲，等于给自己开一个
+  内存放大面；再大就明确报错，而不是把进程吃满。
+- **`readRawBody(request, limitBytes)` 改由调用方给上限**；超限（或读流失败）在 request 上记
+  `RAW_BODY_REJECTED`，由调用方组织文案。**不把「太大」混进 400 的语义**——一个是「太大」、
+  一个是「形状不对」，混在一起会让用户收到一条指向错误方向的报错。
+
+### 修复
+
+- **纯图消息被裸前缀判定吞掉**：前缀判定原先只看命令首词，只带图不带文字的消息会被当成
+  裸前缀整条丢掉（顺带修掉空串上的 `IndexError`）。新口径：**带图就不是裸前缀**。
+- **两处桩漂移**（都能把真缺陷伪装成别的样子）：
+  - `scripts/_fake-host.mjs` 缺 `@deepseek-ai/dsh-attachment` 桩 ⇒ `npm test` 直接 RC=1；
+  - `scripts/_fake_astrbot.py` 的 `FakeTransport.send_message` 缺 `images` 关键字 ⇒
+    真错被伪装成「投递失败：unexpected keyword argument」。
+- **不静默丢图**：逐张失败都要有中文交代；本端不转码 bmp / tiff / avif，明确报错。
+  静默丢图会让用户以为模型没看懂，这比报错更糟。
+
+### 文档
+
+- `docs/BRIDGE-CONTRACT.md`：新增 §3.1 `images[]` 与 §3.1.1 请求体上限；`/health` 示例与
+  §10 版本协商同步到 `7`。
+- README 交付物地图删掉三条已不存在的参考资料条目（`.probe/probe-api.mjs` 等）；
+  `docs/control-plane-transport.md` §2 由「可复现」改为「历史记录」并加注：脚本已在
+  `185d9b1` 清理，证据价值不变。
+
+### 打包与版本
+
+- `npm pack` 排除 `lib/` 下的 `*.bak_*`（`files` 白名单加否定模式）——**目录级白名单不会
+  自动跳过备份文件**；`.gitignore` 补 `*.bak` / `*.bak_*` / `*.bak-*`（它只挡 git，挡不住
+  npm pack）。
+- **出包终检断言**：解 tgz 头逐条读条目名，命中 `.bak` / `.orig` / `.rej` / `.tmp` / `.swp` /
+  `.old` / 编辑器尾随 `~` 就直接失败——打包漏网在本地出包时立刻暴露，而不是等用户解包。
+- **版本闸门由「两侧」改为「三处」**：工作区根 `package.json` 也进闸门，不一致时把三行并排
+  打出来并直接失败。此前它一直停在 `0.9.2` 没人发现——`docs/RELEASING.md` 写着「三处必须
+  相等」，闸门却只断言了两侧。这与 README「最新发布」指针是同一条教训：手工同步点迟早会漂，
+  而漂了没人知道比漂了更糟。根版本已对齐到 `0.9.5`。
+
+### 测试
+
+- `scripts/check-contract-parity.mjs` 新增「图准入闭集」一节：`IMAGE_MEDIA_TYPES` 走**顺序
+  敏感**的对照——原解析器只认 `NAME = "字面量"` 与 `frozenset({...})`，没有 tuple 分支，于是
+  有人把它写成 `"png"` 也照样全绿，而这枚常量在 DSH 侧是做严格相等比对的（本地全绿、上线
+  即炸）。另直读 `main.py` 的 `_IMAGE_MEDIA_TYPE_BY_MIME`，逐条核对值在闭集内、前缀没漏、
+  且四种格式都有产出路径（漏一整行同样静默地把某类图变成发不出去）。
+- `scripts/test-im-commands.py`：桩 `rpc.args` 补默认值对齐真实现，元测试补必填性比较
+  （变异验证：去掉桩的 `sender` 默认值 ⇒ 新断言立刻红，恢复后全绿）。
+- `docs/REVIEW-RESPONSE-v0.9.4.md`（评审回复）：`stream_enabled` 语义定案——它**不是**
+  契约级，DSH 侧不关心 IM 侧渲不渲染；并补两条能钉住「现读」的用例（59 → 61 项）。
+  原有用例全都在 turn 开始前设好开关，对「turn 开头快照」的旧写法**同样会绿**，
+  也就是说那次修复的核心卖点在测试里没有任何一条守着它。
+
 ## v0.9.4 — 2026-09-27
 
 > **给 `stream_enabled=false` 定调：它只关「流式刷屏」，收敛回帖照发。**
