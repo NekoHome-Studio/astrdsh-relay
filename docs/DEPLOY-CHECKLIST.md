@@ -1,6 +1,6 @@
 # 星驿 · 部署与验证清单
 
-> **适用范围**：`bridgeVersion = 6`（v0.8.7 起的任一侧版本均可，见 §1.1）。
+> **适用范围**：`bridgeVersion = 7`（v0.9.5 起的任一侧版本均可，见 §1.1）。
 > **这份文件要干什么**：把「装上去」和「证明它真的在工作」拆成可逐条打勾的步骤。
 >
 > **口径**（先说清楚，免得当成别的东西）：
@@ -22,16 +22,16 @@
 
 | 本侧 | 要求 |
 |---|---|
-| AstrBot 插件 | `astrbot_plugin_dsh_relay` ≥ **0.9.2**（本批交付版；`card` 修复与审批/问答送达修复都在里面） |
-| DSH 插件 | `dsh-astrbot-relay` ≥ **0.9.2**（与 IM 侧同批发布，建议两边同版） |
+| AstrBot 插件 | `astrbot_plugin_dsh_relay` ≥ **0.9.5**（首版 `bridgeVersion = 7`；`card` 修复与审批/问答送达修复在 0.9.2 里） |
+| DSH 插件 | `dsh-astrbot-relay` ≥ **0.9.5**（与 IM 侧同批发布，建议两边同版） |
 
-**`bridgeVersion` 必须两边都是 `6`。** IM 侧启动时会拿 `/health` 的
+**`bridgeVersion` 必须两边都是 `7`。** IM 侧启动时会拿 `/health` 的
 `bridgeVersion` 逐字比对，不匹配**拒绝启用**（不是降级）——这是刻意的：
 v5 的 IM 不会去调 `/proactive`，于是 DSH 侧的 `online` 闸门永远不开、
 自主心跳永不触发，**且没有任何报错**。
 
 > 历史合法组合：v0.8.8 / v0.8.9 只动 IM，所以 **0.8.9 的 IM + 0.8.7 的 DSH** 也成立；
-> **本批 0.9.2 两侧同源发布，直接两边都装 0.9.2，省掉配对判断。**
+> **0.9.5 起两侧同源发布（`bridgeVersion = 7`），直接两边都装同版，省掉配对判断。**
 > **AstrBot 侧是「手工拷贝副本」，不是 git 部署。** 2026-09-26 实测：DSH 侧
 > `~/.dsh/profiles/web/node_modules/dsh-astrbot-relay` 是指向插件的 junction，
 > 仓库一 `git pull` 它立刻变新版；而 AstrBot 侧 `data/plugins/astrbot_plugin_dsh_relay`
@@ -64,7 +64,7 @@ v5 的 IM 不会去调 `/proactive`，于是 DSH 侧的 `online` 闸门永远不
 ### 2.1 装包
 
 ```powershell
-dsh plugin --profile web add ./dsh-astrbot-relay-0.9.2.tgz
+dsh plugin --profile web add ./dsh-astrbot-relay-0.9.7.tgz
 dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 ```
 
@@ -99,7 +99,7 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 | `signatureSkewMs` | `60000` | 只在 `hmacMode: true` 时有意义：允许的签名时间偏移；应 ≥ 两侧时钟最大偏差 |
 | `policy` | `one-to-one` | `one-to-one` / `on-demand` / `daily` 轮转 |
 | `sessionTitleTemplate` | `星驿 · {platform}/{messageType}/{sessionId}` | 反向定位：让 DSH Web 的会话列表里认得出「哪条来自哪个群」 |
-| `approvalTimeoutMs` | `120000` | 应与 IM 侧 `approval_timeout_ms` 一致或**略小**（超时按拒绝处理，fail closed） |
+| `approvalTimeoutMs` | `120000` | 应与 IM 侧 `approval_timeout_ms` 一致或**略大**（IM 侧到点只是**早退提示**，权威判定始终在 DSH 侧） |
 | `questionTimeoutMs` | `300000` | 同上，对应 IM 侧 `question_timeout_ms` |
 | `allowedRpcMethods` | 26 条缺省白名单 | 白名单是**整体替换**（见下）。只想放行子集 / 加自定义方法时才写 |
 | `proactiveHeartbeatMs` | `0`（**关**） | 自主心跳。**默认关**，第 6 节才会动它 |
@@ -118,14 +118,14 @@ dsh --profile web --dump-config | Select-String -Pattern "dsh-astrbot-relay"
 curl.exe -s -H "Authorization: Bearer $TOKEN" "$BASE/astrbot-relay/health"
 ```
 
-- [ ] 返回 `200`，且 `bridgeVersion` 是 `"6"`
+- [ ] 返回 `200`，且 `bridgeVersion` 是 `"7"`
 - [ ] `pathPrefix` / `cwd` / `statePath` 与你配的一致
 - [ ] 不带 `Authorization` 时返回 `401`（**`/health` 也要鉴权**，这是刻意的）
 
 启动日志里应能看到挂载那一行：
 
 ```
-<tag> mounted at /astrbot-relay (bridgeVersion=6)，…
+<tag> mounted at /astrbot-relay (bridgeVersion=7)，…
 ```
 
 > `dshVersion` **不在** `/health` 里（实现从未提供，契约已更正说明）。
@@ -138,7 +138,7 @@ curl.exe -s -H "Authorization: Bearer $TOKEN" "$BASE/astrbot-relay/health"
 ### 3.1 装包
 
 ```powershell
-Expand-Archive .\astrbot_plugin_dsh_relay-0.9.2.zip -DestinationPath <AstrBot 目录>\data\plugins\
+Expand-Archive .\astrbot_plugin_dsh_relay-0.9.7.zip -DestinationPath <AstrBot 目录>\data\plugins\
 ```
 
 然后在 AstrBot WebUI 的插件页启用。
@@ -166,14 +166,14 @@ Expand-Archive .\astrbot_plugin_dsh_relay-0.9.2.zip -DestinationPath <AstrBot �
 要么显式打开 `allow_insecure_http`（打开后启动时那条 warning 依旧会打印）。
 同机调试走 `http://127.0.0.1:3080/astrbot-relay` 即可。
 
-- [ ] 启动日志出现：`[dsh_relay] 桥接就绪：bridgeVersion=6 pathPrefix=… conversations=…`
+- [ ] 启动日志出现：`[dsh_relay] 桥接就绪：bridgeVersion=7 pathPrefix=… conversations=…`
 - [ ] **没有**出现 `契约版本不匹配` / `桥接鉴权失败` / `桥接端没有这个端点`
 
 三条启动期报错分别是三件不同的事，别混：
 
 | 日志 | 意思 |
 |---|---|
-| `契约版本不匹配：本端 6，…` | 两侧版本号不一致，**必须同时升** |
+| `契约版本不匹配：本端 7，…` | 两侧版本号不一致，**必须同时升** |
 | `桥接鉴权失败` / `unauthorized` | `bridge_token` 与 DSH 侧 `token` 不一致，**或 AstrBot 还没重读到新配置**（见 §12.2） |
 | `桥接端没有这个端点` / 404 | `bridge_url` 的**路径段**写错了（漏了/多了 `/astrbot-relay`），或 DSH 侧插件根本没挂上 |
 
@@ -208,7 +208,7 @@ python scripts/verify-bridge-live.py          # 或 npm run verify:bridge
 ```
 
 它从 profile 的 patch 里读 `token` / `pathPrefix` / `cwd`（换机器不用改脚本），
-检查：路由挂没挂、`bridgeVersion` 是不是 6、几条路由是否都 200、
+检查：路由挂没挂、`bridgeVersion` 是不是 7、几条路由是否都 200、
 鉴权是否 fail-closed、`state.json` 是否已生成。**token 只打 sha256 前 12 位**，不泄露明文。
 
 ### 3.3 升级：手工同步四步（别指望 `git pull`）
