@@ -21,13 +21,7 @@
     "description": "请求体 HMAC 签名",
     "type": "bool",
     "default": false,
-    "hint": "开启后每个带请求体的 POST 都附 X-Bridge-Timestamp / X-Bridge-Signature。必须与 DSH 侧 hmacMode 同时开启，否则一侧拒收"
-  },
-  "signature_skew_ms": {
-    "description": "签名时间窗（毫秒）",
-    "type": "int",
-    "default": 60000,
-    "hint": "仅在 hmac_mode 下生效。留得比两侧时钟偏差大一些，DSH 侧 signatureSkewMs 需一致"
+    "hint": "开启后每个带请求体的 POST 都附 X-Bridge-Timestamp / X-Bridge-Signature。必须与 DSH 侧 hmacMode 同时开启，否则一侧拒收；时间窗由 DSH 侧 signatureSkewMs 决定"
   },
   "allow_insecure_http": {
     "description": "允许明文 HTTP",
