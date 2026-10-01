@@ -20,7 +20,7 @@
 
 | 文件 | 是什么 |
 |---|---|
-| `docs/BRIDGE-CONTRACT.md` | **接口契约 v7**。两侧唯一真相来源：拓扑、会话键、13 个端点（含 §11 控制面、§13 工作区改指、§14 分支、§15 会话认领、§16 问答、§18 主动消息取件）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批与问答流程、§17 心跳。 |
+| `docs/BRIDGE-CONTRACT.md` | **接口契约 v7**。两侧唯一真相来源：拓扑、会话键、13 个端点（含 §11 控制面、§12 定位与来源标注、§13 工作区改指、§14 分支、§15 会话认领、§16 问答、§18 主动消息取件）、事件 schema、鉴权、幂等/重试/背压、错误模型、审批与问答流程、§17 心跳。 |
 | `docs/DESIGN.md` | **五层设计（核实修正版）**。含「原始设计假设 vs 源码事实」的 12 条差异修正表、分阶段计划、跨机部署清单、风险登记。 |
 | `docs/dsh-side-capabilities.md` | DSH 侧 API 核实报告（1590 行，逐条 `路径:行号` 证据）。 |
 | `docs/astrbot-side-capabilities.md` | AstrBot 侧 API 核实报告（1889 行，逐条证据）。 |
@@ -93,9 +93,10 @@ git tag v0.1.0 && git push origin v0.1.0   # 触发 Release workflow 自动发�
 | `/dsh adopt <会话 id> [工作区 id]` | 把本对话改指到一个已存在的会话（目标会话不动，也不建新会话） |
 | `/dsh rpc <namespace/method> [JSON 参数]` | 直调 DSH 控制面并回显整封 HTTP 200 信封（不投给 agent）。**只读**：本地白名单镜像宿主 `allowedRpcMethods` 缺省值，白名单外、形状不对、缺必填键都在本地拦下；**仅管理员**，判定依赖 AstrBot 全局 `admins_id` |
 | `/dsh approve <验证码>` | 允许一次待审批操作 |
+| `/dsh answer <验证码> <选项序号\|文字>` | 回答 DSH 的提问（多问题时把 <问题序号> 写在前面，可逐题补交） |
 | `/dsh reject <验证码>` | 拒绝待审批操作 |
 
-指令面**刻意只有这十条**：`workspaces`（列工作区）与 `rebind`（改指）
+指令面**刻意只有这十一条**：`workspaces`（列工作区）与 `rebind`（改指）
 随 v0.5.0 落地，`fork`（分支）随 v0.6.0 落地，`adopt`（认领已存在会话）随 v0.8.0
 落地，`rpc`（控制面只读转发，**仅管理员**）随后落地——它吃的是 AstrBot 的全局
 `admins_id`（`data/cmd_config.json`），**不是**本插件 `_conf_schema.json` 里的键，

@@ -395,5 +395,5 @@ AttributeError: 'Main' object has no attribute '_hb_states'
 | 纯函数（Py） | `astrbot_plugin_dsh_relay/heartbeat_state.py` 零依赖；`scripts/test-heartbeat-state.py`（20 项：三态滞回、跃迁、播报策略、最小间隔、文案不含裸星号） |
 | 假宿主（JS） | `scripts/test-proactive-chain.mjs`（9 项）：真起 `ctx.effect` 定时器跑 `proactiveTick`，覆盖「IM 从未轮询 ⇒ online=false ⇒ 不发起」「插件来源而非用户来源」「哨兵 ⇒ 下行通道零痕迹」「有正文 ⇒ 入发件箱且 `since` ack 生效」「发件箱有界丢最旧」 |
 | 假宿主（Py） | `scripts/test-im-heartbeat.py`（20 项）：桩掉 `astrbot.*`，真跑 `Main` 的 `_touch_frame` / `_evaluate_heartbeats` / `_health_loop` / `_poll_proactive`。**这一层才是接线层**——§6.1 那个 P0 就是它抓到的 |
-| 契约闸门 | `scripts/check-contract-parity.mjs` 比对两侧常量副本（现为 `BRIDGE_VERSION=6`、12 事件、7 错误码、12 路由） |
+| 契约闸门 | `scripts/check-contract-parity.mjs` 比对两侧常量副本（现为 `BRIDGE_VERSION=7`、12 事件、8 错误码、13 路由） |
 | 端到端 | **待部署后手测**：掐掉 DSH 进程 → 观察 A 的播报；`proactiveHeartbeatMs` 设成极小值 → 观察 B 的哨兵抑制与配额 |

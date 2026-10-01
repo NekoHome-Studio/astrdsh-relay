@@ -31,7 +31,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 契约常量（`contract.py`） | ✅ 就位 |
 | `/dsh where` 定位命令 + 本地信息（会话键/桥接地址） | ✅ 就位 |
 | 定位结果排版（`location_text.py`） | ✅ 就位（有单测） |
-| HTTP + SSE 传输层（`BridgeTransport` 十方法） | ✅ 就位 |
+| HTTP + SSE 传输层（`BridgeTransport` 十三个方法） | ✅ 就位 |
 | 流式节流回帖、幂等键复用、重试退避 | ✅ 就位 |
 | 主动推送 `push_to_session` | ✅ 就位 |
 | `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |

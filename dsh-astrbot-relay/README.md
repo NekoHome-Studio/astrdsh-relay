@@ -25,7 +25,7 @@ DeepSeek Harness 的 **IM 网桥 host 半边**。它把「IM 前端（AstrBot）
 | `POST /message`（agent 会话驱动） | ✅ 就位（`agents.create` / `followup` / `whenIdle`） |
 | `GET /events`（SSE 下行 + 事件转发） | ✅ 就位（环形缓冲 + `push` / `deliver` / `Last-Event-ID` 续传） |
 | `POST /approval`（审批 waterfall） | ✅ 就位（4 位一次性 code，`askApproval` 挂 `approval/request`） |
-| `POST /answer`（问答回执，契约 §16） | ✅ 就位（把答案交给挂起的 `askQuestion`） |
+| `POST /answer`（问答回执，契约 §16） | ✅ 就位（把答案交给挂起的 `askQuestions`） |
 | `GET /workspaces`（工作区清单，契约 §13.1） | ✅ 就位（`workspaceRegistry.list()` 的只读面投影） |
 | `POST /session/rebind`（改指到指定工作区，契约 §13.2） | ✅ 就位（建新会话 + 换映射，旧会话保留） |
 | `POST /session/fork`（对话中分支，契约 §14） | ✅ 就位（把某轮前缀复制成新会话，逐行对齐官方 `ApiSessionController.fork`） |
