@@ -227,6 +227,10 @@ import main as plugin_main  # noqa: E402
 
 UMO = "default:GroupMessage:1000000001"
 UMO_PRIVATE = "default:FriendMessage:1000000002"
+#: 本机 ``data/cmd_config.json`` 的 ``wake_prefix``。只是**替身**默认值：
+#: 真值属于宿主配置，生产代码从 ``event.message_obj.message_str`` 反推，
+#: 从不读这个常量。
+WAKE_PREFIX = "/"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -398,10 +402,22 @@ class Sender:
 
 
 class MessageObj:
-    def __init__(self, message_id: str = "m-1", sender: Sender | None = None, group_id: str = "") -> None:
+    def __init__(
+        self,
+        message_id: str = "m-1",
+        sender: Sender | None = None,
+        group_id: str = "",
+        message_str: str = "",
+    ) -> None:
         self.message_id = message_id
         self.sender = sender or Sender()
         self.group_id = group_id
+        #: **剥壳前**的平台层原文。真实框架里 ``WakingCheckStage`` 只改
+        #: ``event.message_str``（``core/pipeline/waking_check/stage.py``），
+        #: 这个字段从头到尾不动 —— 它是分辨「群里真敲了 `/dsh`」与「裸敲 dsh」
+        #: 的唯一依据。缺了它，生产代码要么报 AttributeError，要么静默退回
+        #: ``event.message_str``（两者恒等 ⇒ 群聊里的调用全被闸门收回）。
+        self.message_str = message_str
 
 
 class FakeEvent:
@@ -410,6 +426,11 @@ class FakeEvent:
     只实现生产代码真的会碰的那几个成员；**故意不实现**其它属性，
     这样一旦生产代码开始依赖新 API，测试就会以 AttributeError 出声，
     而不是悄悄给出一个假值。
+
+    唯一一处「多给」的是 ``message_obj.message_str``（剥壳前原文）：
+    宿主会先剥 wake_prefix 再派事件，所以 ``message_str`` 里已经看不到用户
+    到底敲没敲 ``/``。替身把它按宿主规则补上（见 ``_default_raw``），
+    否则「群里必须真敲 ``/dsh``」这条闸门在测试里永远测不出真假。
     """
 
     def __init__(
@@ -418,20 +439,28 @@ class FakeEvent:
         umo: str = UMO,
         *,
         private: bool = False,
+        raw_message_str: str | None = None,
         group_id: str = "",
         user_id: str = "10001",
         nickname: str = "测试用户",
         message_id: str = "m-1",
         admin: bool = False,
     ) -> None:
+        #: 插件看到的那份文本（= 宿主剥掉 wake_prefix 之后的 ``event.message_str``）
         self.message_str = message_str
+        self.private = private
+        #: 原文是否由调用方显式给定。为 ``False`` 时 ``set_message()`` 会跟着重算，
+        #: 免得「换了消息、原文还留着上一条」这种替身自身的漂移。
+        self._raw_explicit = raw_message_str is not None
         self.unified_msg_origin = umo
         self.message_obj = MessageObj(
             message_id=message_id,
             sender=Sender(user_id=user_id, nickname=nickname),
             group_id=group_id,
+            message_str=(
+                raw_message_str if self._raw_explicit else self._default_raw(message_str)
+            ),
         )
-        self.private = private
         self.group_id = group_id
         self.admin = admin
         #: ``event.send()`` 发出去的（流式分片、审批提示……）
@@ -440,6 +469,26 @@ class FakeEvent:
         self.yielded: list[Result] = []
         self.call_llm: bool | None = None
         self.stopped = False
+
+    def _default_raw(self, text: str) -> str:
+        """替身版的「剥壳前原文」。
+
+        真实框架：私聊默认不要求 wake_prefix（本机
+        ``friend_message_needs_wake_prefix=False``）⇒ 原文与 ``message_str`` 相同；
+        群聊**必须**敲过 wake_prefix 才会进到插件 ⇒ 原文比 ``message_str`` 多一个
+        前导 ``/``。只有显式传 ``raw_message_str`` 才代表「群里裸敲 dsh」。
+        """
+        return text if self.private else WAKE_PREFIX + text
+
+    def set_message(self, text: str, raw: str | None = None) -> "FakeEvent":
+        """换一条消息，两个字段一起维护（``drive(m, e, message)`` 也走这里）。"""
+        self.message_str = text
+        if raw is not None:
+            self._raw_explicit = True
+            self.message_obj.message_str = raw
+        elif not self._raw_explicit:
+            self.message_obj.message_str = self._default_raw(text)
+        return self
 
     def plain_result(self, text: str) -> Result:
         return Result("text", text)
@@ -578,7 +627,7 @@ def drive(main_obj, event: FakeEvent, message: str | None = None) -> FakeEvent:
     （前缀匹配、白名单、takeover 标记）就是要测的东西之一。
     """
     if message is not None:
-        event.message_str = message
+        event.set_message(message)
     event.yielded = drain(main_obj.on_bridge_message(event))
     return event
 
