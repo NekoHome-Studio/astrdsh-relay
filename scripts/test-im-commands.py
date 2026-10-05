@@ -155,6 +155,55 @@ def _() -> None:
     assert event.call_llm is True and event.stopped is True
 
 
+section("群聊闸门：群里必须真敲 /dsh，私聊裸 dsh 仍可用")
+
+
+@test("群里裸敲 dsh ⇒ 完全不插手（不设结果、不停事件、不召 LLM 判定）")
+def _() -> None:
+    # 2026-10-05 共犯报的误触发：群里有人正常说话、内容恰好以 `dsh` 开头，
+    # 就被 relay 当指令接管了。宿主会先剥掉 wake_prefix 再派事件，所以
+    # `event.message_str` 里两种情况长得一模一样，只能看剥壳前的原文。
+    m, _c, t = make_main()
+    event = drive(m, FakeEvent(message_str="dsh where", raw_message_str="dsh where"))
+    assert event.yielded == [], event.yielded
+    assert event.call_llm is None, "不该碰 should_call_llm"
+    assert event.stopped is False, "不该 stop_event"
+    assert t.calls == [], t.calls
+
+
+@test("群里真敲 /dsh ⇒ 照常路由（原文带着那个斜杠）")
+def _() -> None:
+    m, _c, t = make_main()
+    event = drive(m, FakeEvent(message_str="dsh where", raw_message_str="/dsh where"))
+    assert t.called("where"), t.calls
+    assert event.call_llm is True and event.stopped is True
+
+
+@test("私聊裸敲 dsh ⇒ 照常可用（这道闸只管群聊）")
+def _() -> None:
+    # `friend_message_needs_wake_prefix=False`：私聊本来就不用敲 `/`，
+    # 这里要是跟着一起收回，私聊用户会平白多一道门槛。
+    mod = __import__("_fake_astrbot")
+    m, _c, t = mod.make_main()
+    event = drive(m, FakeEvent(message_str="dsh where", umo=mod.UMO_PRIVATE, private=True))
+    assert t.called("where"), t.calls
+    assert event.call_llm is True and event.stopped is True
+
+
+@test("私聊与群聊的剥壳前原文各自默认正确（替身自身的正确性）")
+def _() -> None:
+    mod = __import__("_fake_astrbot")
+    assert mod.FakeEvent(message_str="dsh").message_obj.message_str == "/dsh"
+    assert mod.FakeEvent(
+        message_str="dsh", umo=mod.UMO_PRIVATE, private=True
+    ).message_obj.message_str == "dsh"
+    # 显式给定原文后，set_message 不该把它冲掉
+    event = mod.FakeEvent(message_str="dsh", raw_message_str="/dsh")
+    event.set_message("dsh where")
+    assert event.message_obj.message_str == "/dsh", event.message_obj.message_str
+    assert event.message_str == "dsh where", event.message_str
+
+
 section("六个只读/改指指令都真的路由到了对应端点")
 
 
