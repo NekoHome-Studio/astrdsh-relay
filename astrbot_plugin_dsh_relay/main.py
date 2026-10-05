@@ -1088,7 +1088,15 @@ class Main(Star):
 
         # 匹配规则见 _match_prefix：这里踩过一次真 bug（配置里的尾空格让裸前缀落空）。
         raw = (event.message_str or "").strip()
-        tail = _match_prefix(raw, str(self._cfg("trigger_prefix", "dsh ") or ""))
+        # 群聊里「裸敲 dsh」必须落空（2026-10-05 共犯报的误触发）：只有 wake_prefix
+        # 真被剥掉过（说明对方敲的是 `/dsh …`）才在群里认账；私聊不设这道闸，
+        # 裸敲 `dsh` 照旧好使。
+        require_slash = (not _is_private_chat(event)) and _original_text(event) == raw
+        tail = _match_prefix(
+            raw,
+            str(self._cfg("trigger_prefix", "dsh ") or ""),
+            require_slash=require_slash,
+        )
         if tail is None:
             return  # 不匹配：不设结果、不发消息，完全不干扰 AstrBot 默认逻辑
 
@@ -2584,7 +2592,25 @@ def _now_ms() -> int:
     """当前毫秒时间戳。心跳的帧间隔判定统一用它，避免各处各写一遍 ``time.time() * 1000``。"""
     return int(time.time() * 1000)
 
-def _match_prefix(raw: str, prefix: str) -> "str | None":
+def _original_text(event: AstrMessageEvent) -> str:
+    """取**剥壳前**的消息原文，专供群聊里分辨「敲了 `/dsh`」还是「裸敲 dsh」。
+
+    ``WakingCheckStage`` 命中 wake_prefix 时会写
+    ``event.message_str = event.message_str[len(wake_prefix):].strip()``
+    （``core/pipeline/waking_check/stage.py``），只动事件属性；平台层原文
+    ``event.message_obj.message_str`` 从头到尾没被动过。于是两条消息只要
+    「原文 != 剥壳后」就说明它真的带过 wake_prefix。取不到原文时退回
+    ``event.message_str``（等价于"没剥壳"，群聊里会被 ``_match_prefix`` 收回）。
+    """
+    obj_text = getattr(getattr(event, "message_obj", None), "message_str", None)
+    if isinstance(obj_text, str) and obj_text.strip():
+        return obj_text.strip()
+    return (event.message_str or "").strip()
+
+
+def _match_prefix(
+    raw: str, prefix: str, *, require_slash: bool = False
+) -> "str | None":
     """前缀匹配，返回**前缀之后的原文**（未 `strip`）；不匹配返回 `None`。
 
     比裸 `raw.startswith(prefix)` 多做三件事，三件都是踩出来的：
@@ -2603,13 +2629,27 @@ def _match_prefix(raw: str, prefix: str) -> "str | None":
        反过来，私聊或 wake_prefix 被改掉时又会原样送来 `/dsh xx`。因此配置
        `dsh `、用户敲 `/dsh xx`，与配置 `/dsh `、剥壳后送来 `dsh xx`，两种都要
        命中。
+
+    4. ``require_slash=True`` 时**收回第 3 条里"两边"的那一半**，只认带前导 `/`
+       的那种。2026-10-05 共犯报「群里以 `dsh` 开头会误触发」：群聊里任何人
+       随口打一句 `dsh ...` 都会被本插件吞掉，而本机 wake_prefix 是 `/`，
+       于是"正常调用"（`/dsh xx`，已被剥成 `dsh xx`）和"误触发"（裸 `dsh xx`，
+       压根没剥壳）在 ``event.message_str`` 上长得一模一样，只能回到**剥壳前的
+       原文**去分辨：调用方（``on_bridge_message``）用 ``_original_text(event)``
+       取原文，与剥壳后不同 ⇒ 对方确实敲了 `/` ⇒ 放行；完全相同 ⇒ 群聊里就是
+       裸敲 ⇒ 收回。私聊不设这道闸（私聊只对本人，裸敲 `dsh` 一直好用）。
     """
     base = prefix.strip()
     if base.startswith("/"):
         base = base[1:]
     if not base:
         return None
-    text = raw[1:] if raw.startswith("/") else raw
+    if raw.startswith("/"):
+        text = raw[1:]
+    elif require_slash:
+        return None
+    else:
+        text = raw
     if not text.startswith(base):
         return None
     tail = text[len(base):]
