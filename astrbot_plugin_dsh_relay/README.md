@@ -36,7 +36,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | 主动推送 `push_to_session` | ✅ 就位 |
 | `_session_allowed` 白名单、`/dsh approve|reject` 一次性 code 回执 | ✅ 就位 |
 | `/dsh help` 与裸 `/dsh` 共用的指令清单（`_usage_text`） | ✅ 就位 |
-| 前缀匹配按去尾空格的基名判定，两边各容忍一个前导 `/`，基名后必须跟空白/行尾 | ✅ 就位 |
+| 前缀匹配按去尾空格的基名判定：群聊须真敲前导 `/`，私聊两边各容忍一个，基名后必须跟空白/行尾 | ✅ 就位 |
 
 ## 指令用法
 
@@ -46,15 +46,17 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 `return`，而 `filter.event_message_type(ALL)` 让群聊里 `is_at_or_wake_command` 恒真，
 默认 LLM 便接手作答（P0 的成因，判定见 `core/pipeline/process_stage/stage.py`）。
 
-**匹配时不看尾空格**，且**两边各容忍一个前导 `/`**：配置 `dsh ` 时 `/dsh` 与 `dsh`
-都能命中，裸敲前缀（后面什么都没有）也照样有反应；私聊或 wake_prefix 被改掉时原样
-送来的 `/dsh xx` 同样命中。基名之后必须紧跟空白或行尾，`/dshx ...` 这类别的插件的
-命令不会被吞。
+**匹配时不看尾空格**，且要不要真敲斜杠**按对话类型分**：**群聊里必须真敲前导 `/`**
+（`/dsh xx`），裸写 `dsh xx` 一律不命中——不然群里谁一句以 `dsh` 开头的话都会被插件
+接管，默认 LLM 永远轮不上；**私聊两边各容忍一个**，配置 `dsh ` 时 `/dsh` 与 `dsh` 都
+能命中，裸敲前缀（后面什么都没有）也照样有反应。私聊或 wake_prefix 被改掉时原样送来
+的 `/dsh xx` 同样命中。基名之后必须紧跟空白或行尾，`/dshx ...` 这类别的插件的命令不会
+被吞。
 
 | 指令 | 作用 |
 |---|---|
 | `dsh <内容>` | 投给 DSH 并流式回帖。命中后**接管本事件**（`should_call_llm(True)` + `stop_event()`），不会再被 AstrBot 默认 LLM 回一遍 |
-| `dsh help` | 显示指令清单。与裸 `dsh` 是同一份文案（都出自 `main._usage_text`），不存在文档与实现对不上的第二条路径 |
+| `dsh help` | 显示指令清单。与私聊里裸 `dsh` 是同一份文案（都出自 `main._usage_text`），不存在文档与实现对不上的第二条路径 |
 | `dsh where` | 定位本对话的工作区与 DSH 会话。设计取舍见下 |
 | `dsh approve <验证码>` | 允许**一次**待审批操作（一次性回执，不接受「是/否」这类转述） |
 | `dsh reject <验证码>` | 拒绝待审批操作 |
@@ -65,7 +67,7 @@ AstrBot 侧的 **IM ↔ DSH 网桥**。它把 IM 里的消息投递给 DeepSeek 
 | `dsh adopt <会话 id> [工作区 id]` | 把本对话**改指**到一个**已存在**的会话：目标会话本体一个字节都不动，也不建新会话 |
 | `dsh rpc <namespace/method> [JSON 参数]` | 直调 DSH 控制面（`namespace/method` + JSON 对象），回显宿主返回的整封 HTTP 200 信封，不投给 agent。**只读**：本地白名单镜像宿主 `allowedRpcMethods` 缺省值，白名单外、形状不对、缺必填键都在本地拦下。**仅管理员**：判定读 AstrBot 全局 `admins_id`（`data/config/cmd_config.json`），改完要重启 AstrBot |
 
-（上表里每条写成 `/dsh ...` 也等价——前导斜杠被剥掉或被容忍，落点相同。）
+（上表里每条写成 `/dsh ...` 都等价，群里也只有这种写法命中——前导斜杠被剥掉或被容忍，落点相同。）
 
 **指令面这十一条**：`<内容>` / `help` / `where` / `approve` / `reject` / `answer` /
 `workspaces` / `rebind` / `fork` / `adopt` / `rpc`。后五条是 v0.5.0–v0.8.0 新增的**宿主既有语义的薄封装**，
