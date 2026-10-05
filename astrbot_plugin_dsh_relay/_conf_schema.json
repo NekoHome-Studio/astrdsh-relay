@@ -39,7 +39,7 @@
     "description": "触发前缀",
     "type": "string",
     "default": "dsh ",
-    "hint": "默认不带斜杠：AstrBot 会先剥掉 wake_prefix(\"/\")，群里敲 /dsh 时插件实读 dsh。匹配时两边各容忍一个前导 /，故 /dsh 与 dsh 都能触发"
+    "hint": "默认不带斜杠：AstrBot 会先剥掉 wake_prefix(\"/\")，群里敲 /dsh 时插件实读 dsh。群聊必须真敲前导 /（裸 dsh 会误触发，一律不认）；私聊两边各容忍一个前导 /，/dsh 与 dsh 都能触发"
   },
   "allow_from": {
     "description": "会话白名单（会话 / 成员 / 群，空=全部允许）",
